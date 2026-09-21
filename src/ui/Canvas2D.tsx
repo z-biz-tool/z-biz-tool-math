@@ -40,7 +40,7 @@ export default function Canvas2D() {
   const revision = useStore((s) => s.revision);
   const viewSig = useStore((s) => {
     const v = s.views[s.mode];
-    return `${s.mode}|${v.cx}|${v.cy}|${v.scale}|${v.width}|${v.height}`;
+    return `${s.mode}|${v.cx}|${v.cy}|${v.scale}|${v.width}|${v.height}|${v.logX ? 1 : 0}${v.logY ? 1 : 0}`;
   });
 
   /** 只画叠加层：十字光标、吸附点、读数板、几何悬停高亮 */

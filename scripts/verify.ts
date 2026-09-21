@@ -4,12 +4,12 @@
  */
 import { Engine, compile, compileReal, evalString, isRealStatic } from "../src/core/machine.ts";
 import { parseExpr } from "../src/core/parser.ts";
-import { contourLevels, marchingSquares } from "../src/core/contour.ts";
+import { contourLevels, marchingSquares, traceContours } from "../src/core/contour.ts";
 import { integrateSystem, jacobianAt, equilibria, classifyEquilibrium } from "../src/core/field.ts";
 import { domainColor, sampleComplex, newtonFractal, jacobianOfMap } from "../src/core/cplane.ts";
 import { buildParametricGrid, projectScene, orbitCamera, surfaceNormals, normalAt } from "../src/core/surface.ts";
 import { colormap, COLORMAPS } from "../src/core/colormap.ts";
-import { niceTicks, Viewport } from "../src/core/view.ts";
+import { logTicks, niceTicks, Viewport } from "../src/core/view.ts";
 import { GeometryDoc } from "../src/core/geometry.ts";
 import { F1 } from "../src/render/scene2d.ts";
 
@@ -205,6 +205,104 @@ ok("实数快路径静态判定", isRealStatic(parseExpr("x^2+sin(x)"), ["x"], e
   near("缩放锚点屏幕位置不变 x", asx, 400, 1e-9);
   near("缩放锚点屏幕位置不变 y", asy, 300, 1e-9);
   near("缩放后世界坐标不变", zoom.toWorld(400, 300)[1], ay, 1e-9);
+}
+
+/* --- 对数轴：轴空间（log10）里的线性变换 --- */
+{
+  const lin = new Viewport({ cx: 0, cy: 0, scale: 60, width: 800, height: 600 });
+  ok("线性视口不写 log 标记", !("logX" in lin.toJSON()) && !("logY" in lin.toJSON()));
+  ok("线性轴映射为恒等", lin.toAxisX(-3.5) === -3.5 && lin.fromAxisY(0.25) === 0.25);
+
+  const lg = lin.withLog(true, true);
+  ok("切换对数轴后中心回到 1", lg.cx === 0 && lg.cy === 0);
+  ok("对数轴视口恒正", lg.left > 0 && lg.bottom > 0);
+  near("一个十倍频程 = scale 像素", lg.toScreen(10, 0)[0] - lg.toScreen(1, 0)[0], lg.scale, 1e-9);
+  const rt = lg.toWorld(...lg.toScreen(1e-4, 7));
+  near("对数轴往返 x", rt[0], 1e-4, 1e-18);
+  near("对数轴往返 y", rt[1], 7, 1e-12);
+  ok("非正的 x 不产生 NaN", Number.isFinite(lg.toScreen(0, 1)[0]) && Number.isFinite(lg.toScreen(-5, 1)[0]));
+  ok("0 与负值都落在屏幕左外", lg.toScreen(0, 1)[0] < 0 && lg.toScreen(-5, 1)[0] < 0);
+  ok("toJSON 往返保留轴制式", (() => {
+    const j = lg.toJSON();
+    const r = new Viewport(j);
+    return r.logX && r.logY && r.scale === lg.scale && r.right === lg.right;
+  })());
+
+  // 缩放与平移在轴空间仍然是线性的：锚点世界值不变，跨度按十倍频程计
+  const z = lg.zoomAt(300, 220, 3.7);
+  const [wxa, wsp] = [lg.toWorld(300, 220), z.toScreen(...lg.toWorld(300, 220))];
+  near("对数轴缩放锚点 x", wsp[0], 300, 1e-6);
+  near("对数轴缩放锚点 y", wsp[1], 220, 1e-6);
+  near("对数轴缩放保持世界值", z.toWorld(300, 220)[0], wxa[0], 1e-12);
+  ok("缩放不丢轴制式", z.logX && z.logY);
+  const decades = Math.log10(z.right / z.left);
+  near("视口宽度=十倍频程数", decades, z.width / z.scale, 1e-9);
+
+  // 拟合：把 [1e-2, 1e6] × [1e-3, 1e3] 塞进视口
+  const f = lg.fit(1e-2, 1e6, 1e-3, 1e3);
+  ok("对数轴 fit 覆盖目标区间", f.left <= 1e-2 * 1.001 && f.right >= 1e6 * 0.999, `${f.left}..${f.right}`);
+  ok("对数轴 fit 纵向同样", f.bottom <= 1e-3 * 1.001 && f.top >= 1e3 * 0.999, `${f.bottom}..${f.top}`);
+
+  // 采样按等倍率前进（对数轴上等距即等比）
+  const u0 = f.toAxisX(f.left);
+  const du = (f.toAxisX(f.right) - u0) / 8;
+  const ratios: number[] = [];
+  for (let i = 1; i <= 8; i++) ratios.push(f.fromAxisX(u0 + du * i) / f.fromAxisX(u0 + du * (i - 1)));
+  ok("对数采样等比", ratios.every((r) => Math.abs(r - ratios[0]) < 1e-9), ratios.join(","));
+}
+
+/* --- 对数刻度与 loglog 等值线 --- */
+{
+  const t = niceTicks(1e-3, 1e3, 8, "log");
+  ok("主刻度落在整十倍频", t.values.length === 7 && t.values.every((v, i) => Math.abs(Math.log10(v) + 3 - i) < 1e-9), t.values.join(","));
+  ok("10ⁿ 标签", t.labels[0] === "10⁻³" && t.labels[3] === "1" && t.labels[6] === "10³", t.labels.join(","));
+  ok("次级网格按 2/5", t.minor.length >= 2 && t.minor.some((v) => Math.abs(v - 0.002) < 1e-12), t.minor.slice(0, 4).join(","));
+  ok("对数刻度无统一步长", t.step === 0);
+  const wide = niceTicks(1e-10, 1e10, 8, "log");
+  ok("跨 20 个十倍频时抽稀", wide.values.length <= 9 && wide.values.length >= 7, String(wide.values.length));
+  const zoomed = niceTicks(2, 7, 8, "log");
+  ok("不足一个十倍频时提倍数为标签", zoomed.values.length === 6 && zoomed.labels.every((l) => l.length > 0), zoomed.labels.join(","));
+  ok("log 模式即 logTicks", JSON.stringify(t) === JSON.stringify(logTicks(1e-3, 1e3, 8)));
+
+  // loglog 下 y = x² 的对数像 v = 2u 是直线：等值线映回屏幕后必须共线
+  const vp = new Viewport({ cx: 2, cy: 2, scale: 120, width: 900, height: 600, logX: true, logY: true });
+  // loglog 下 y = x² 的等值线应当摊成一条直线（斜率即指数），线性轴下明显是弯的
+  const isoline = (v: Viewport, res: number) => {
+    const ch = traceContours(
+      (u, w) => v.fromAxisY(w) - v.fromAxisX(u) ** 2,
+      v.axisLeft,
+      v.axisRight,
+      v.axisBottom,
+      v.axisTop,
+      res,
+      0,
+      3,
+    );
+    return ch
+      .flat()
+      .flatMap((s) => [
+        v.toScreen(v.fromAxisX(s[0]), v.fromAxisY(s[1])),
+        v.toScreen(v.fromAxisX(s[2]), v.fromAxisY(s[3])),
+      ]);
+  };
+  /** 以两端点连线为基准，返回最大偏离与斜率 */
+  const straightness = (pts: number[][]) => {
+    const byX = pts.slice().sort((a, b) => a[0] - b[0]);
+    const [p0, p1] = [byX[0], byX[byX.length - 1]];
+    const k = (p1[1] - p0[1]) / (p1[0] - p0[0]);
+    const b = p1[1] - k * p1[0];
+    return { k, dev: Math.max(...pts.map(([x, y]) => Math.abs(y - (k * x + b)))) };
+  };
+  {
+    const pts = isoline(vp, 120);
+    const on = straightness(pts);
+    ok("loglog 幂律有等值线", pts.length > 200, String(pts.length));
+    ok("loglog 幂律近乎直线", on.dev < 1.5, `最大偏离 ${on.dev}`);
+    near("直线斜率 = -2（screen 上指数取负）", on.k, -2, 1e-2);
+    const lin = new Viewport({ cx: 2, cy: 2, scale: 120, width: 900, height: 600 });
+    const off = straightness(isoline(lin, 400));
+    ok("线性轴下同一曲线是弯的", off.dev > 20, `最大偏离 ${off.dev}`);
+  }
 }
 
 /* --- 隐函数：marching squares --- */

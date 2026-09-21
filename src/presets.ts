@@ -34,6 +34,8 @@ export interface Preset {
   geo?: (doc: GeometryDoc, eng: Engine) => void;
   /** [cx, cy, scale] */
   view?: [number, number, number];
+  /** 对数轴：x / y / xy（loglog）。此时 view 的 cx、cy 按十倍频程计 */
+  log?: "x" | "y" | "xy";
 }
 
 const L = (p: Partial<Layer> & { expr: string }): Layer => ({
@@ -157,6 +159,47 @@ export const PRESETS: Preset[] = [
       L({ kind: "sequence", expr: "1 + 1/n", label: "1 + 1/n", color: paletteAt(0) }),
       L({ kind: "sequence", expr: "sin(n/2)*n/6", label: "sin(n/2)·n/6", color: paletteAt(2) }),
       L({ kind: "cartesian", expr: "floor(x)", label: "⌊x⌋", color: paletteAt(3), dashed: true }),
+    ],
+  },
+
+  {
+    key: "func-semilogx",
+    title: "semilogx：多时间尺度衰减",
+    mode: "func",
+    hint: "x 轴对数，三个相差百倍的时间常数同屏",
+    view: [1, 0, 150],
+    log: "x",
+    layers: () => [
+      L({ expr: "exp(-x)", label: "e^(−x)", color: paletteAt(0) }),
+      L({ expr: "exp(-x/30)", label: "e^(−x/30)", color: paletteAt(1) }),
+      L({ expr: "exp(-x/1000)", label: "e^(−x/1000)", color: paletteAt(3) }),
+    ],
+  },
+  {
+    key: "func-semilogy",
+    title: "semilogy：指数与多项式",
+    mode: "func",
+    hint: "y 轴对数，e^x 成为直线，多项式仍是缓弯",
+    view: [0, 0, 64],
+    log: "y",
+    layers: () => [
+      L({ expr: "exp(x)", label: "eˣ", color: paletteAt(0) }),
+      L({ expr: "10^(x/2)", label: "10^(x/2)", color: paletteAt(2), dashed: true }),
+      L({ expr: "x^3", label: "x³", color: paletteAt(4) }),
+    ],
+  },
+  {
+    key: "func-loglog",
+    title: "loglog：增长阶与幂律",
+    mode: "func",
+    hint: "双对数下幂函数是直线，斜率即指数",
+    view: [3, 2.3, 150],
+    log: "xy",
+    layers: () => [
+      L({ expr: "x^2", label: "x²", color: paletteAt(0) }),
+      L({ expr: "sqrt(x)", label: "√x", color: paletteAt(1) }),
+      L({ expr: "log2(x)", label: "log₂x", color: paletteAt(3), dashed: true }),
+      L({ expr: "x*ln(x)/3", label: "x·ln x", color: paletteAt(4) }),
     ],
   },
 
@@ -569,8 +612,9 @@ export function applyPreset(key: string): void {
     revision: st.revision + 1,
   });
 
-  if (p.view) {
-    const v = st.views[p.mode];
-    st.setView(p.mode, v.with({ cx: p.view[0], cy: p.view[1], scale: p.view[2] }));
+  if (p.view || p.log) {
+    /* 预设自带轴制式：不写 log 就是线性轴，切走上一个示例的对数轴 */
+    const v = st.views[p.mode].withLog(p.log === "x" || p.log === "xy", p.log === "y" || p.log === "xy");
+    st.setView(p.mode, p.view ? v.with({ cx: p.view[0], cy: p.view[1], scale: p.view[2] }) : v);
   }
 }

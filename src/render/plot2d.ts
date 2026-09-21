@@ -72,8 +72,8 @@ export function drawFrame(
 ): { xt: Ticks; yt: Ticks } {
   const th = themeOf(p.dark);
   const { vp, ctx, w, h } = p;
-  const xt = niceTicks(vp.left, vp.right, Math.max(4, Math.round(w / 110)), opts.xPi ? "pi" : "auto");
-  const yt = niceTicks(vp.bottom, vp.top, Math.max(4, Math.round(h / 80)), opts.yPi ? "pi" : "auto");
+  const xt = niceTicks(vp.left, vp.right, Math.max(4, Math.round(w / 110)), vp.logX ? "log" : opts.xPi ? "pi" : "auto");
+  const yt = niceTicks(vp.bottom, vp.top, Math.max(4, Math.round(h / 80)), vp.logY ? "log" : opts.yPi ? "pi" : "auto");
   const [ox, oy] = vp.toScreen(0, 0);
 
   ctx.lineWidth = 1;
@@ -162,7 +162,9 @@ export function drawFrame(
     }
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.fillText("O", Math.min(w - 12, Math.max(2, ox + 4)), Math.min(h - 14, Math.max(2, oy + 4)));
+    // 对数轴上不存在原点，标出来只会误导
+    if (!vp.logX && !vp.logY)
+      ctx.fillText("O", Math.min(w - 12, Math.max(2, ox + 4)), Math.min(h - 14, Math.max(2, oy + 4)));
   }
   return { xt, yt };
 }
@@ -250,6 +252,7 @@ export function strokeChains(p: Paper, chains: number[][][], st: StrokeStyle): v
 /**
  * 直角坐标曲线采样：自适应加密 + 垂直渐近线断笔。
  * 判定规则：屏幕纵坐标跨越整个画布高度两倍以上，且两侧符号相反 → 视为间断。
+ * 采样按「轴空间」等距：对数轴上即等倍率前进，否则小值端会被摊成几个点。
  */
 export function plotCartesian(
   p: Paper,
@@ -257,12 +260,19 @@ export function plotCartesian(
   st: StrokeStyle & { samples?: number; fillTo?: number; domain?: [number, number]; stepped?: boolean },
 ): void {
   const { vp, ctx, w, h } = p;
-  const [a, b] = st.domain ?? [vp.left, vp.right];
+  let [a, b] = st.domain ?? [vp.left, vp.right];
+  if (vp.logX) {
+    // 对数轴上没有 x ≤ 0，且视野外的十倍频程不值得采样
+    a = Math.max(a, vp.left);
+    b = Math.min(b, vp.right);
+  }
   const n = Math.max(60, Math.round(st.samples ?? Math.max(w * 1.5, 600)));
+  const u0 = vp.toAxisX(a);
+  const du = (vp.toAxisX(b) - u0) / n;
   const pts: number[][] = [];
   const yLimit = h * 6;
   for (let i = 0; i <= n; i++) {
-    const x = a + ((b - a) * i) / n;
+    const x = vp.fromAxisX(u0 + du * i);
     let y = NaN;
     try {
       y = f(x);

@@ -11,7 +11,7 @@ import { VK } from "../core/types.ts";
 import type { Val } from "../core/types.ts";
 import { Engine, compile, compileReal, evalString, suggestParams } from "../core/machine.ts";
 import { parseExpr } from "../core/parser.ts";
-import { signedRegionMask, traceContours } from "../core/contour.ts";
+import { signedRegionMask, traceContours, type Seg } from "../core/contour.ts";
 import {
   classifyEquilibrium,
   equilibria,
@@ -23,6 +23,7 @@ import {
 import { criticalPoints, domainColor, mapCurve, newtonFractal, type C } from "../core/cplane.ts";
 import { colormap, rgbCss } from "../core/colormap.ts";
 import { niceTicks } from "../core/view.ts";
+import type { Viewport } from "../core/view.ts";
 import type { GeoLabState, Layer, ToolKind } from "../state.ts";
 import type { GeometryDoc } from "../core/geometry.ts";
 import * as P from "./plot2d.ts";
@@ -159,6 +160,17 @@ function cfn(eng: Engine, src: string, out?: SceneOut, tag?: string): ((z: C) =>
 
 /* ============================================================== 函数模式 */
 
+/**
+ * 等值线段从轴空间映回世界坐标。
+ * 网格在轴空间等距（对数轴上即等倍率），线性轴下这是恒等映射，逐位不变。
+ */
+function fromAxis(vp: Viewport, chains: Seg[][]): Seg[][] {
+  if (!vp.logX && !vp.logY) return chains;
+  return chains.map((ch) =>
+    ch.map((s) => [vp.fromAxisX(s[0]), vp.fromAxisY(s[1]), vp.fromAxisX(s[2]), vp.fromAxisY(s[3])] as Seg),
+  );
+}
+
 function drawFuncMode(p: P.Paper, s: GeoLabState, out: SceneOut): void {
   const eng = s.engine;
   const { vp } = p;
@@ -180,13 +192,18 @@ function drawFuncMode(p: P.Paper, s: GeoLabState, out: SceneOut): void {
       case "derivative": {
         const f = fn(eng, l.expr, 1, out, l.label || l.expr);
         if (!f) break;
-        // 中心差分步长随视口尺度自适应，兼顾精度与噪声
-        const h = Math.max(1e-9, (vp.right - vp.left) * 2.5e-5);
-        P.plotCartesian(p, (x) => (f.at(x + h) - f.at(x - h)) / (2 * h), {
-          ...st,
-          dashed: true,
-          glow: false,
-        });
+        /* 中心差分步长随视口尺度自适应，兼顾精度与噪声；
+           对数轴上跨度是十倍频程，绝对步长会在小值端把导数抹平，改用相对步长 */
+        const slope = vp.logX
+          ? (x: number) => {
+              const h = Math.max(1e-12, Math.abs(x) * 1e-5);
+              return (f.at(x + h) - f.at(x - h)) / (2 * h);
+            }
+          : (() => {
+              const h = Math.max(1e-9, (vp.right - vp.left) * 2.5e-5);
+              return (x: number) => (f.at(x + h) - f.at(x - h)) / (2 * h);
+            })();
+        P.plotCartesian(p, slope, { ...st, dashed: true, glow: false });
         break;
       }
       case "integral": {
@@ -206,13 +223,16 @@ function drawFuncMode(p: P.Paper, s: GeoLabState, out: SceneOut): void {
         }
         P.plotCartesian(p, (x) => f.at(x), { ...st, fillTo: 0, domain: [a, b], glow: false });
         const n = 420;
+        /* 累积面积按轴空间等距推进：对数轴上这样才有足够的首端分辨率 */
+        const u0 = vp.toAxisX(a > 0 || !vp.logX ? a : vp.left);
+        const u1 = vp.toAxisX(b > 0 || !vp.logX ? b : vp.right);
         const xs: number[] = [];
         const acc: number[] = [];
         let sum = 0;
-        let px = a;
-        let py = f.at(a);
+        let px = vp.fromAxisX(u0);
+        let py = f.at(px);
         for (let i = 0; i <= n; i++) {
-          const x = a + ((b - a) * i) / n;
+          const x = vp.fromAxisX(u0 + ((u1 - u0) * i) / n);
           const y = f.at(x);
           if (i > 0 && isNum(y) && isNum(py)) sum += ((x - px) * (y + py)) / 2;
           px = x;
@@ -245,16 +265,16 @@ function drawFuncMode(p: P.Paper, s: GeoLabState, out: SceneOut): void {
         const res = Math.max(70, Math.min(420, Math.round(l.samples / 5)));
         const level = l.level ?? 0;
         const chains = traceContours(
-          (x, y) => f.at(x, y) - level,
-          vp.left,
-          vp.right,
-          vp.bottom,
-          vp.top,
+          (u, v) => f.at(vp.fromAxisX(u), vp.fromAxisY(v)) - level,
+          vp.axisLeft,
+          vp.axisRight,
+          vp.axisBottom,
+          vp.axisTop,
           res,
           0,
           3,
         );
-        P.drawChains(p, chains, { ...st, glow: false });
+        P.drawChains(p, fromAxis(vp, chains), { ...st, glow: false });
         break;
       }
       case "inequality": {
@@ -263,12 +283,13 @@ function drawFuncMode(p: P.Paper, s: GeoLabState, out: SceneOut): void {
         const level = l.level ?? 0;
         const W = Math.max(48, Math.round(p.w / 3));
         const H = Math.max(48, Math.round(p.h / 3));
+        /* 掩码按像素铺满画布，所以采样也必须走在轴空间（屏幕 ↔ 轴空间是线性的） */
         const mask = signedRegionMask(
-          (x, y) => f.at(x, y) - level,
-          vp.left,
-          vp.right,
-          vp.top,
-          vp.bottom,
+          (u, v) => f.at(vp.fromAxisX(u), vp.fromAxisY(v)) - level,
+          vp.axisLeft,
+          vp.axisRight,
+          vp.axisTop,
+          vp.axisBottom,
           W,
           H,
           0,
@@ -276,16 +297,16 @@ function drawFuncMode(p: P.Paper, s: GeoLabState, out: SceneOut): void {
         );
         P.fillMask(p, mask, W, H, l.color, 0.22);
         const chains = traceContours(
-          (x, y) => f.at(x, y) - level,
-          vp.left,
-          vp.right,
-          vp.bottom,
-          vp.top,
+          (u, v) => f.at(vp.fromAxisX(u), vp.fromAxisY(v)) - level,
+          vp.axisLeft,
+          vp.axisRight,
+          vp.axisBottom,
+          vp.axisTop,
           200,
           0,
           3,
         );
-        P.drawChains(p, chains, { ...st, width: 1.8, glow: false });
+        P.drawChains(p, fromAxis(vp, chains), { ...st, width: 1.8, glow: false });
         break;
       }
       case "sequence": {
@@ -789,7 +810,13 @@ export function drawScene2D(p: P.Paper, s: GeoLabState): SceneOut {
   P.begin(p, s.settings.dark);
   const frameFirst = s.mode !== "complex";
   if (frameFirst) {
-    if (s.mode === "func" && s.layers.every((l) => !l.visible || l.kind === "polar")) P.drawPolarFrame(p);
+    if (
+      s.mode === "func" &&
+      !p.vp.logX &&
+      !p.vp.logY &&
+      s.layers.every((l) => !l.visible || l.kind === "polar")
+    )
+      P.drawPolarFrame(p);
     else if (s.mode !== "geom" || s.geo.grid)
       P.drawFrame(p, {
         xPi: s.settings.piTicksX,

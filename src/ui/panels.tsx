@@ -254,6 +254,17 @@ function FuncPanel() {
   const layers = useStore((s) => s.layers);
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
+  const logX = useStore((s) => s.views.func.logX);
+  const logY = useStore((s) => s.views.func.logY);
+  /**
+   * 对数轴长在视口上：投影本身要跟着变换走，做成全局开关会让其它模式失配。
+   * 另一轴的现值取自 store，连点两个开关时不能沿用渲染时的闭包旧值。
+   */
+  const setLog = (axis: "x" | "y", on: boolean) => {
+    const st = useStore.getState();
+    const v = st.views.func;
+    st.setView("func", axis === "x" ? v.withLog(on, v.logY) : v.withLog(v.logX, on));
+  };
   return (
     <div className="gl-panel">
       <Card title="函数图层">
@@ -278,9 +289,15 @@ function FuncPanel() {
         </Row>
       </Card>
       <Card title="坐标轴">
+        <Toggle label="对数刻度（x）" on={logX} onChange={(v) => setLog("x", v)} />
+        <Toggle label="对数刻度（y）" on={logY} onChange={(v) => setLog("y", v)} />
         <Toggle label="π 刻度（x）" on={settings.piTicksX} onChange={(v) => setSettings({ piTicksX: v })} />
         <Toggle label="π 刻度（y）" on={settings.piTicksY} onChange={(v) => setSettings({ piTicksY: v })} />
         <Toggle label="次级网格" on={settings.showMinorGrid} onChange={(v) => setSettings({ showMinorGrid: v })} />
+        <div style={{ fontSize: 11.5, opacity: 0.66, lineHeight: 1.7 }}>
+          对数轴即 MATLAB 的 semilogx / semilogy / loglog：主刻度落在 10 的整数幂，次级网格按倍率铺开，
+          采样按等倍率前进。该轴上不存在 0 与负值，中心会回到 1；开启后 π 刻度让位。
+        </div>
         <div style={{ fontSize: 11.5, opacity: 0.66, lineHeight: 1.7 }}>
           支持 sin/cos/tan/asin/…、ln/log/exp、abs、sqrt、gamma、erf、floor/ceil、if(cond,a,b)、
           向量与复数；用户函数在控制台用 f(x) = … 定义。
