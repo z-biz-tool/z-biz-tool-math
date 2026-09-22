@@ -12,7 +12,13 @@ export interface C {
 }
 
 /** 复变函数 */
-export type CFn = (z: C) => C;
+export type CFast = (re: number, im: number, o: C) => void;
+
+/** 复变函数：cf 为可选的无分配快路径（machine.compileCplx 编出的闭包） */
+export interface CFn {
+  (z: C): C;
+  cf?: CFast;
+}
 
 const TAU = CN.TAU;
 
@@ -23,14 +29,46 @@ function fin(v: number): boolean {
   return Number.isFinite(v);
 }
 
+function norm(o: C): C {
+  if (!fin(o.re)) o.re = NaN;
+  if (!fin(o.im)) o.im = NaN;
+  return o;
+}
+
 /** 调用用户函数，抛错视为奇点 */
 function call(f: CFn, re: number, im: number): C {
+  if (f.cf) {
+    const o: C = { re: 0, im: 0 };
+    try {
+      f.cf(re, im, o);
+    } catch {
+      return { re: NaN, im: NaN };
+    }
+    return norm(o);
+  }
   try {
-    const v = f({ re, im });
-    return { re: fin(v.re) ? v.re : NaN, im: fin(v.im) ? v.im : NaN };
+    return norm(f({ re, im }));
   } catch {
     return { re: NaN, im: NaN };
   }
+}
+
+/** 逐像素热路径的求值槽：调用方必须在下一次求值前把数值取进局部变量 */
+const EV: C = { re: 0, im: 0 };
+
+function evalInto(f: CFn, re: number, im: number): boolean {
+  if (f.cf) {
+    try {
+      f.cf(re, im, EV);
+    } catch {
+      return false;
+    }
+    return fin(EV.re) && fin(EV.im);
+  }
+  const v = call(f, re, im);
+  EV.re = v.re;
+  EV.im = v.im;
+  return fin(v.re) && fin(v.im);
 }
 
 function okC(v: C): boolean {
@@ -159,24 +197,31 @@ export function domainColor(
     const y = y0 + dy * j;
     for (let i = 0; i < W; i++) {
       const o = (j * W + i) * 3;
-      let v: C;
       const x = x0 + dx * i;
+      let vr = 0;
+      let vi = 0;
       if (opts.iterFn) {
-        v = call(f, x, y);
+        if (!evalInto(f, x, y)) continue;
+        vr = EV.re;
+        vi = EV.im;
         for (let k = 0; k < 8; k++) {
-          if (!okC(v)) break;
-          const nv = call(opts.iterFn, v.re, v.im);
-          const moved = Math.hypot(nv.re - v.re, nv.im - v.im);
-          if (!okC(nv)) break;
-          v = nv;
+          const pr = vr;
+          const pi = vi;
+          if (!evalInto(opts.iterFn, vr, vi)) break;
+          const moved = Math.hypot(EV.re - pr, EV.im - pi);
+          vr = EV.re;
+          vi = EV.im;
           if (moved < 1e-13) break;
         }
+      } else if (!evalInto(f, x, y)) {
+        continue; // 奇点：保持全黑
       } else {
-        v = call(f, x, y);
+        vr = EV.re;
+        vi = EV.im;
       }
-      const m = Math.hypot(v.re, v.im);
+      const m = Math.hypot(vr, vi);
       if (!fin(m)) continue; // 奇点：保持全黑
-      const ang = Math.atan2(v.im, v.re);
+      const ang = Math.atan2(vi, vr);
       const hue = ang / TAU + 0.5;
       const lm = Math.log1p(m);
       const lum = Math.pow(lm / (1 + lm), expo);
@@ -203,7 +248,7 @@ export function domainColor(
 
 /**
  * 复 Newton 迭代：导数用复步 f'(z) = (Im[f(z+ih)] - Im[f(z)])/h - i(Re[...])/h（解析、免符号微分），
- * 带步长限制与回溯阻尼。传入 track 时记录每步实部，供颜色距离使用。
+ * 带步长限制与回溯阻尼。
  */
 function newtonRun(
   f: CFn,
@@ -212,25 +257,23 @@ function newtonRun(
   maxIter: number,
   tol: number,
   limit: number,
-  track?: Float64Array,
 ): { re: number; im: number; it: number; ok: boolean } {
   let zr = re;
   let zi = im;
   const out: C = { re: 0, im: 0 };
   for (let k = 0; k < maxIter; k++) {
-    if (track) track[k] = zr;
     if (!fin(zr) || !fin(zi)) return { re: 0, im: 0, it: k, ok: false };
-    const v = call(f, zr, zi);
-    if (!okC(v)) return { re: zr, im: zi, it: k, ok: false };
-    const nv = Math.hypot(v.re, v.im);
+    if (!evalInto(f, zr, zi)) return { re: zr, im: zi, it: k, ok: false };
+    const vr = EV.re;
+    const vi = EV.im;
+    const nv = Math.hypot(vr, vi);
     if (nv < tol) return { re: zr, im: zi, it: k, ok: true };
-    const vp = call(f, zr, zi + CSTEP);
-    if (!okC(vp)) return { re: zr, im: zi, it: k, ok: false };
-    const dr = (vp.im - v.im) / CSTEP;
-    const di = -(vp.re - v.re) / CSTEP;
+    if (!evalInto(f, zr, zi + CSTEP)) return { re: zr, im: zi, it: k, ok: false };
+    const dr = (EV.im - vi) / CSTEP;
+    const di = -(EV.re - vr) / CSTEP;
     if (!fin(dr) || !fin(di)) return { re: zr, im: zi, it: k, ok: false };
     if (dr === 0 && di === 0) return { re: zr, im: zi, it: k, ok: false };
-    const q = CN.cdiv(v.re, v.im, dr, di, out);
+    const q = CN.cdiv(vr, vi, dr, di, out);
     // 步长限幅：远离区域时先约束在框内，保证有界
     let sr = q.re;
     let si = q.im;
@@ -245,8 +288,7 @@ function newtonRun(
     for (let b = 0; b < 5; b++) {
       const nr = zr - lam * sr;
       const ni = zi - lam * si;
-      const cand = call(f, nr, ni);
-      const cm = Math.hypot(cand.re, cand.im);
+      const cm = evalInto(f, nr, ni) ? Math.hypot(EV.re, EV.im) : NaN;
       if (fin(cm) && (cm < nv || cm < tol)) {
         zr = nr;
         zi = ni;
@@ -272,30 +314,30 @@ function addCluster(list: C[], re: number, im: number): void {
 }
 
 /**
- * Newton 分形：先自动发现全部相异根（环形散点 + 阻尼 Newton + 聚类），
- * 再逐像素记录归属根序号（-1 = 未收敛）与迭代次数。
+ * 一次整幅采样前定好的共用量：根清单、Newton 步长限幅、像素归属判据。
+ * 三者都随包围盒尺寸变化，分带续算必须复用整幅算出来的这一份，否则逐带结果和整幅结果不一致。
  */
-export function newtonFractal(
+export interface NewtonPlan {
+  roots: C[];
+  limit: number;
+  match: number;
+}
+
+/** 根发现：三层同心散点，覆盖各吸引盆（含包围区域外的根） */
+export function newtonPlan(
   f: CFn,
   x0: number,
   x1: number,
   y0: number,
   y1: number,
-  w: number,
-  h: number,
-  opts?: { maxIter?: number; tol?: number },
-): { iter: Uint16Array; root: Int16Array; roots: C[] } {
-  const W = Math.max(1, Math.floor(w));
-  const H = Math.max(1, Math.floor(h));
-  const maxIter = Math.max(3, Math.min(65535, Math.floor(opts?.maxIter ?? 60)));
-  const tol = opts?.tol && fin(opts.tol) ? opts.tol : 1e-9;
+  tol?: number,
+): NewtonPlan {
+  const t = tol && fin(tol) ? tol : 1e-9;
   const cx = (x0 + x1) / 2;
   const cy = (y0 + y1) / 2;
   const rx = Math.abs(x1 - x0) / 2 || 1;
   const ry = Math.abs(y1 - y0) / 2 || 1;
   const limit = 2.2 * Math.max(rx, ry);
-
-  // 根发现：三层同心散点，覆盖各吸引盆（含包围区域外的根）
   const roots: C[] = [];
   for (const ring of [0.55, 1.25, 2]) {
     for (let m = 0; m < 24; m++) {
@@ -306,25 +348,45 @@ export function newtonFractal(
         cx + rx * ring * Math.cos(th),
         cy + ry * ring * Math.sin(th),
         100,
-        tol,
+        t,
         limit,
       );
       if (r.ok) addCluster(roots, r.re, r.im);
     }
   }
   roots.sort((a, b) => a.re - b.re || a.im - b.im);
+  return { roots, limit, match: Math.max(1e-5, 1e-6 * Math.max(rx, ry)) };
+}
+
+/**
+ * Newton 分形：先自动发现全部相异根（环形散点 + 阻尼 Newton + 聚类），
+ * 再逐像素记录归属根序号（-1 = 未收敛）与迭代次数。传入 plan 可跳过根发现。
+ */
+export function newtonFractal(
+  f: CFn,
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+  w: number,
+  h: number,
+  opts?: { maxIter?: number; tol?: number; plan?: NewtonPlan },
+): { iter: Uint16Array; root: Int16Array; roots: C[] } {
+  const W = Math.max(1, Math.floor(w));
+  const H = Math.max(1, Math.floor(h));
+  const maxIter = Math.max(3, Math.min(65535, Math.floor(opts?.maxIter ?? 60)));
+  const tol = opts?.tol && fin(opts.tol) ? opts.tol : 1e-9;
+  const { roots, limit, match } = opts?.plan ?? newtonPlan(f, x0, x1, y0, y1, tol);
 
   const iter = new Uint16Array(W * H);
   const root = new Int16Array(W * H);
-  const track = new Float64Array(maxIter + 1);
   const dx = stepOf(x0, x1, W);
   const dy = stepOf(y0, y1, H);
-  const match = Math.max(1e-5, 1e-6 * Math.max(rx, ry));
   for (let j = 0; j < H; j++) {
     const y = y0 + dy * j;
     for (let i = 0; i < W; i++) {
       const k = j * W + i;
-      const r = newtonRun(f, x0 + dx * i, y, maxIter, tol, limit, track);
+      const r = newtonRun(f, x0 + dx * i, y, maxIter, tol, limit);
       iter[k] = r.it;
       let idx = -1;
       if (r.ok) {
@@ -340,22 +402,6 @@ export function newtonFractal(
       }
       root[k] = idx;
     }
-  }
-  // 颜色距离 min|Re(z_k) - Re(root*)|，越暗越快收敛
-  const bestRe: number[] = new Array(roots.length).fill(Infinity);
-  for (let q = 0; q < roots.length; q++) {
-    for (let k = 0; k < W * H; k++) {
-      const d = Math.abs(track[k] - roots[q].re);
-      if (d < bestRe[q]) bestRe[q] = d;
-    }
-  }
-  for (let k = 0; k < W * H; k++) {
-    const q = root[k];
-    if (q < 0) continue;
-    const d = Math.abs(track[k] - bestRe[q]);
-    let scaled = Math.pow(d / (1 + d), 0.35);
-    if (!fin(scaled)) scaled = 1;
-    iter[k] = Math.max(iter[k], Math.min(65535, Math.round(scaled * 255)));
   }
   return { iter, root, roots };
 }

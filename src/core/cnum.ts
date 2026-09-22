@@ -158,6 +158,28 @@ export function cpow(ar: number, ai: number, br: number, bi: number, o: C): C {
         return o;
       }
       if (br === -1) return cdiv(1, 0, ar, ai, o);
+      if (Math.abs(br) <= 16) {
+        // 复底的整数幂走二进制累乘：主值式 exp(e·Log z) 要对辐角取模，
+        // 既慢（两次超越函数）又在 ±π 边界丢符号精度
+        let qr = ar;
+        let qi = ai;
+        let wr = 1;
+        let wi = 0;
+        for (let e = br < 0 ? -br : br; e > 0; e >>= 1) {
+          if (e & 1) {
+            const t = wr * qr - wi * qi;
+            wi = wr * qi + wi * qr;
+            wr = t;
+          }
+          const t = qr * qr - qi * qi;
+          qi = 2 * qr * qi;
+          qr = t;
+        }
+        if (br < 0) return cdiv(1, 0, wr, wi, o);
+        o.re = wr;
+        o.im = wi;
+        return o;
+      }
     }
   }
   if (ar === 0 && ai === 0) {

@@ -35,8 +35,8 @@ export const DARK: Theme = {
   tick: "rgba(190,200,240,0.85)",
   text: "rgba(226,232,255,0.92)",
   muted: "rgba(160,170,210,0.6)",
-  accent: "#8b7cf6",
-  selection: "rgba(139,124,246,0.35)",
+  accent: "#667eea",
+  selection: "rgba(102,126,234,0.35)",
 };
 
 export const LIGHT: Theme = {
@@ -47,8 +47,9 @@ export const LIGHT: Theme = {
   tick: "rgba(40,50,90,0.85)",
   text: "rgba(20,25,50,0.92)",
   muted: "rgba(70,80,120,0.6)",
-  accent: "#6d5ae0",
-  selection: "rgba(109,90,224,0.28)",
+  /* 品牌紫在白底上偏浅，压暗一档再用作引导线 */
+  accent: "#5265bb",
+  selection: "rgba(82,101,187,0.28)",
 };
 
 export function themeOf(dark: boolean): Theme {
@@ -476,6 +477,8 @@ export function fillMask(p: Paper, mask: Uint8Array, w: number, h: number, color
 }
 
 const scratchCache = new Map<string, { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D }>();
+/** 键是栅格尺寸，连续改变窗口大小会一路攒出几十个画布 */
+const SCRATCH_MAX = 4;
 function getScratch(w: number, h: number) {
   if (typeof document === "undefined") return null;
   const key = `${w}x${h}`;
@@ -488,6 +491,10 @@ function getScratch(w: number, h: number) {
     if (!ctx) return null;
     s = { canvas, ctx };
     scratchCache.set(key, s);
+    if (scratchCache.size > SCRATCH_MAX) {
+      const first = scratchCache.keys().next().value;
+      if (first !== undefined) scratchCache.delete(first);
+    }
   }
   return s;
 }
@@ -521,6 +528,24 @@ export function blitPixels(
   ctx.imageSmoothingEnabled = smooth;
   ctx.drawImage(off.canvas, sx0, sy0, sx1 - sx0, sy1 - sy0);
   ctx.restore();
+}
+
+/** 把已经画好的栅格画布按世界矩形贴到纸上：重复利用同一份采样时免去逐像素搬运 */
+export function blitCanvas(
+  p: Paper,
+  src: HTMLCanvasElement,
+  world: [number, number, number, number],
+  alpha = 1,
+  smooth = false,
+): void {
+  const [x0, x1, y0, y1] = world;
+  const [sx0, sy1] = vpScreen(p, x0, y0);
+  const [sx1, sy0] = vpScreen(p, x1, y1);
+  p.ctx.save();
+  p.ctx.globalAlpha = alpha;
+  p.ctx.imageSmoothingEnabled = smooth;
+  p.ctx.drawImage(src, sx0, sy0, sx1 - sx0, sy1 - sy0);
+  p.ctx.restore();
 }
 
 function parseColor(css: string): [number, number, number] {
@@ -627,7 +652,7 @@ export function drawQuiver(
     const m = Math.hypot(q.u, q.v);
     if (!Number.isFinite(m) || m === 0) continue;
     drawArrow(p, q.x, q.y, q.x + q.u * o.scale, q.y + q.v * o.scale, {
-      color: o.colormapFn ? o.colormapFn(Math.min(1, m / max)) : o.color ?? "#8b7cf6",
+      color: o.colormapFn ? o.colormapFn(Math.min(1, m / max)) : o.color ?? "#667eea",
       width: o.width ?? 1.6,
     });
   }
@@ -744,7 +769,7 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
 }
 
 /** 角度弧标记（几何画板的“角”显示） */
-export function drawAngleMark(p: Paper, vx: number, vy: number, a1: number, a2: number, r = 22, color = "#8b7cf6"): void {
+export function drawAngleMark(p: Paper, vx: number, vy: number, a1: number, a2: number, r = 22, color = "#667eea"): void {
   const { ctx } = p;
   const [sx, sy] = vpScreen(p, vx, vy);
   ctx.save();
@@ -757,7 +782,7 @@ export function drawAngleMark(p: Paper, vx: number, vy: number, a1: number, a2: 
 }
 
 /** 十字光标 + 追踪点（鼠标悬停时显示函数值） */
-export function drawCrosshair(p: Paper, x: number, y: number, color = "rgba(139,124,246,0.5)"): void {
+export function drawCrosshair(p: Paper, x: number, y: number, color = "rgba(102,126,234,0.5)"): void {
   const { ctx } = p;
   const [sx, sy] = vpScreen(p, x, y);
   ctx.save();

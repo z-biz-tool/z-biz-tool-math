@@ -1443,7 +1443,11 @@ export function compile(eng: Engine, node: Node, names: string[]): Compiled {
 
 /** 表达式中出现的自变量名（按优先级排序），用于 UI 自动补全参数 */
 export function suggestParams(node: Node, eng: Engine, take: number): string[] {
-  const names = [...freeNames(node)].filter((n) => !CONSTANTS[n] && !eng.fns.has(n));
+  // 已经是全局量（参数滑块、控制台里定义的常量）的名字不能占自变量的槽位，
+  // 否则求值时会被视口坐标悄悄覆盖，滑块就再也拧不动了
+  const names = [...freeNames(node)].filter(
+    (n) => !CONSTANTS[n] && !eng.fns.has(n) && !eng.globals.has(n),
+  );
   const out: string[] = [];
   for (const cand of CONTEXT_VARS) if (names.includes(cand) && !out.includes(cand)) out.push(cand);
   for (const n of names) if (!out.includes(n)) out.push(n);
@@ -1763,6 +1767,182 @@ export function isRealStatic(node: Node, names: string[], eng: Engine): boolean 
   };
   return ok(node);
 }
+
+/* ------------------------------------------------------------------ */
+/* 复数快路径：逐像素着色用的无分配求值                                  */
+/* ------------------------------------------------------------------ */
+
+/** 复变求值闭包：把 z = re + im·i 的结果写进出参，全程不新建对象 */
+export type CplxFn = (re: number, im: number, o: CN.C) => void;
+
+/**
+ * 复变表达式 → 无分配闭包。调用的仍是 cnum 里那批 (re, im, o) 原语，
+ * 因此与 AST 路径逐位一致；任何无法等价提升的构造（条件、比较、向量、
+ * 用户自定义函数、下标）都返回 null，由调用方回退通用路径。
+ */
+export function compileCplx(eng: Engine, node: Node, name = "z"): CplxFn | null {
+  const konst = (r: number, i: number): CplxFn => {
+    return (_re, _im, o) => {
+      o.re = r;
+      o.im = i;
+    };
+  };
+  // 不含自变量与全局量的子树在编译期算一次；参数滑块一动就重新编译，
+  // 所以这里绝不能把 eng.globals 的当前值折进常量，否则缓存会过期。
+  const pure = (n: Node): boolean => {
+    switch (n.type) {
+      case "num":
+        return true;
+      case "ident":
+        return n.name !== name && !eng.globals.has(n.name) && isImmutIdent(n.name);
+      case "un":
+        return n.op !== "!" && pure(n.e);
+      case "bin":
+        return pure(n.l) && pure(n.r);
+      case "cond":
+        return pure(n.c) && pure(n.a) && pure(n.b);
+      case "call":
+        return !eng.fns.has(n.name) && n.args.every(pure);
+      default:
+        return false;
+    }
+  };
+  const fold = (n: Node): CN.C | null => {
+    try {
+      const v = eng.eval(n, { eng, scope: undefined, depth: 0 });
+      return v.k === VK.Num ? { re: v.re, im: v.im } : null;
+    } catch {
+      return null;
+    }
+  };
+  const build = (n: Node): CplxFn | null => {
+    if (n.type === "bin" || n.type === "call" || n.type === "cond" || n.type === "un") {
+      if (pure(n)) {
+        const c = fold(n);
+        if (c) return konst(c.re, c.im);
+      }
+    }
+    switch (n.type) {
+      case "num":
+        return konst(n.value, 0);
+      case "ident":
+        return identFn(eng, n.name, name, konst);
+      case "un": {
+        const e = build(n.e);
+        if (!e) return null;
+        if (n.op === "+") return e;
+        if (n.op !== "-") return null;
+        return (re, im, o) => {
+          e(re, im, o);
+          o.re = -o.re;
+          o.im = -o.im;
+        };
+      }
+      case "bin": {
+        const l = build(n.l);
+        const r = build(n.r);
+        if (!l || !r) return null;
+        const f = BIN_C[n.op];
+        if (!f) return null;
+        // 每个二元节点在编译期独占一块右操作数暂存，递归时互不覆盖
+        const t: CN.C = { re: 0, im: 0 };
+        return (re, im, o) => {
+          l(re, im, o);
+          r(re, im, t);
+          f(o.re, o.im, t.re, t.im, o);
+        };
+      }
+      case "call": {
+        if (n.args.length !== 1 || eng.fns.has(n.name)) return null;
+        const a = build(n.args[0]);
+        if (!a) return null;
+        const c1 = C1[n.name];
+        if (c1) {
+          return (re, im, o) => {
+            a(re, im, o);
+            c1(o.re, o.im, o);
+          };
+        }
+        const g = SCALAR_C[n.name];
+        if (g) {
+          return (re, im, o) => {
+            a(re, im, o);
+            o.re = g(o.re, o.im);
+            o.im = 0;
+          };
+        }
+        if (n.name === "conj") {
+          return (re, im, o) => {
+            a(re, im, o);
+            o.im = -o.im;
+          };
+        }
+        return null;
+      }
+      default:
+        return null;
+    }
+  };
+  return build(node);
+}
+
+const IMMAT = new Set(["i", "j", "I"]);
+function isImmutIdent(nm: string): boolean {
+  return IMMAT.has(nm) || CONSTANTS[nm] !== undefined;
+}
+
+function identFn(
+  eng: Engine,
+  nm: string,
+  zName: string,
+  konst: (r: number, i: number) => CplxFn,
+): CplxFn | null {
+  if (nm === zName) {
+    return (re, im, o) => {
+      o.re = re;
+      o.im = im;
+    };
+  }
+  const g = eng.globals.get(nm);
+  if (g) {
+    if (g.k !== VK.Num) return null;
+    // 全局量每次调用现取：滑块改的是同一个 Map，编译结果可以留着用
+    return (_re, _im, o) => {
+      const v = eng.globals.get(nm);
+      if (!v || v.k !== VK.Num) throw new Error(`未定义的名称 “${nm}”`);
+      o.re = v.re;
+      o.im = v.im;
+    };
+  }
+  if (IMMAT.has(nm)) return konst(0, 1);
+  if (eng.fns.has(nm)) return null;
+  const c = CONSTANTS[nm];
+  if (c !== undefined) return konst(c, 0);
+  return null;
+}
+
+/** 复数二元原语；运算符归一化后查表 */
+const BIN_C: Record<string, (ar: number, ai: number, br: number, bi: number, o: CN.C) => CN.C> = {
+  "+": CN.cadd,
+  "-": CN.csub,
+  "*": CN.cmul,
+  "/": CN.cdiv,
+  "^": CN.cpow,
+};
+
+/** 取实数的复函数（模、辐角、实部虚部…），与 STRICT 里的定义逐字对应 */
+const SCALAR_C: Record<string, (re: number, im: number) => number> = {
+  abs: Math.hypot,
+  norm: Math.hypot,
+  abs2: (re, im) => re * re + im * im,
+  re: (re) => re,
+  real: (re) => re,
+  im: (_re, im) => im,
+  imag: (_re, im) => im,
+  phase: (re, im) => Math.atan2(im === 0 ? 0 : im, re),
+  arg: (re, im) => Math.atan2(im === 0 ? 0 : im, re),
+  angle0: (re, im) => Math.atan2(im === 0 ? 0 : im, re),
+};
 
 export function evalString(eng: Engine, src: string): Val {
   const d = parseDefinition(src);

@@ -12,14 +12,43 @@ import {
   type ComplexState,
   type GeoLabState,
   type Layer,
+  type LinState,
   type Mode,
+  type NnState,
   type Param,
   type Settings,
   type SurfState,
   type VectorState,
 } from "../state.ts";
 
-const MODES: Mode[] = ["func", "geom", "complex", "vector", "surf", "console"];
+const MODES: Mode[] = ["func", "geom", "complex", "vector", "lin", "nn", "surf", "console"];
+
+/**
+ * 神经网络落盘的部分：只有超参数与显示设置。
+ * model/data 是活的 TypedArray —— JSON.stringify 把 Float64Array 写成 {"0":…,"1":…}
+ * 这样的普通对象，读回来仍是个真值，但 .length 变 undefined、.fill 直接没有，
+ * 面板会以为「已有模型」而拿着一堆索引对象去前向/清零。所以导出时剥掉，
+ * 载入后置空，由面板按这些超参数重建；训练进度（epochs/loss/curve）属于被丢掉
+ * 的那个模型，跟着一起丢，免得报出一张对不上号的准确率。
+ */
+type NnPersist = Omit<NnState, "model" | "data" | "running" | "epochs" | "loss" | "acc" | "curve">;
+
+/** 逐字段挑出可序列化的那部分：NnState 将来添字段时靠类型报出来，而不是被静默丢件或整份带出 */
+function nnToProject(n: NnState): NnPersist {
+  return {
+    dataset: n.dataset,
+    samples: n.samples,
+    hidden: n.hidden,
+    depth: n.depth,
+    act: n.act,
+    lr: n.lr,
+    momentum: n.momentum,
+    batch: n.batch,
+    seed: n.seed,
+    showBoundary: n.showBoundary,
+    boundaryRes: n.boundaryRes,
+  };
+}
 
 export interface Project {
   v: 1;
@@ -28,6 +57,8 @@ export interface Project {
   params: Param[];
   cplx: ComplexState;
   vec: VectorState;
+  lin: LinState;
+  nn: NnPersist;
   surf: SurfState;
   settings: Settings;
   views: Partial<Record<Mode, ViewportInit>>;
@@ -63,6 +94,8 @@ export function serializeProject(): string {
     params: s.params,
     cplx: s.cplx,
     vec: s.vec,
+    lin: s.lin,
+    nn: nnToProject(s.nn),
     surf: s.surf,
     settings: s.settings,
     views,
@@ -120,6 +153,12 @@ export function applyProject(text: string): void {
     activeLayer: data.layers[0]?.id ?? null,
     cplx: { ...s.cplx, ...data.cplx },
     vec: { ...s.vec, ...data.vec },
+    lin: { ...s.lin, ...data.lin },
+    /* 老工程没有 nn 段落时整个跳过，别把当前那个训练中的模型顺手清掉；
+       有的话只恢复超参数，model/data 交回 null 让面板按新形状重建 */
+    nn: data.nn
+      ? { ...s.nn, ...data.nn, model: null, data: null, running: false, epochs: 0, loss: 0, acc: 0, curve: [] }
+      : s.nn,
     surf: { ...s.surf, ...data.surf },
     settings: { ...s.settings, ...data.settings },
     views,

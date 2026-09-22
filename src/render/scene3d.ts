@@ -19,6 +19,7 @@ import {
   surfaceOfRevolution,
   type Camera,
   type Mesh,
+  type MeshContour,
   type SceneProjection,
 } from "../core/surface.ts";
 import { buildLUT } from "../core/colormap.ts";
@@ -36,6 +37,45 @@ export interface Scene3DOut {
 
 const EMPTY = new Uint32Array(0);
 const cache = new Map<string, Mesh>();
+
+/**
+ * 只依赖网格本身的派生数据。网格按签名缓存了，但法向、参数线、等高线此前每帧
+ * 重算一遍——轨道拖拽时网格根本没变，这部分是纯粹的白给。
+ */
+interface Derived {
+  bounds: [number, number, number, number, number, number];
+  norms: Float32Array;
+  edges: Uint32Array;
+  contours: MeshContour[];
+}
+const derived = new WeakMap<Mesh, Derived>();
+const lutCache = new Map<string, Uint8ClampedArray>();
+
+function derive(m: Mesh): Derived {
+  let d = derived.get(m);
+  if (!d) {
+    const structured = m.tris.length > 0;
+    const bounds = meshBounds(m);
+    const zmax = bounds[5] === bounds[4] ? bounds[4] + 1 : bounds[5];
+    d = {
+      bounds,
+      norms: structured ? surfaceNormals(m) : new Float32Array(0),
+      edges: structured ? meshEdges(m) : EMPTY,
+      contours: structured ? meshContours(m, levelsOf(bounds[4], zmax, 12)) : [],
+    };
+    derived.set(m, d);
+  }
+  return d;
+}
+
+function lutOf(name: string): Uint8ClampedArray {
+  let l = lutCache.get(name);
+  if (!l) {
+    l = buildLUT(name);
+    lutCache.set(name, l);
+  }
+  return l;
+}
 
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -148,7 +188,7 @@ function buildMesh(eng: Engine, l: SurfLayer, s: GeoLabState, errors: string[]):
 interface Item {
   layer: SurfLayer;
   mesh: Mesh;
-  norms: Float32Array;
+  d: Derived;
   zmin: number;
   zmax: number;
   lut: Uint8ClampedArray;
@@ -189,7 +229,8 @@ export function drawScene3D(
     if (!l.visible) continue;
     const m = buildMesh(s.engine, l, s, out.errors);
     if (!m || !m.positions.length) continue;
-    const mb = meshBounds(m);
+    const d = derive(m);
+    const mb = d.bounds;
     if (s.surf.autoBox)
       box = [
         Math.min(box[0], mb[0]),
@@ -202,10 +243,10 @@ export function drawScene3D(
     items.push({
       layer: l,
       mesh: m,
-      norms: m.tris.length ? surfaceNormals(m) : new Float32Array(0),
+      d,
       zmin: mb[4],
       zmax: mb[5] === mb[4] ? mb[4] + 1 : mb[5],
-      lut: buildLUT(l.colormap),
+      lut: lutOf(l.colormap),
     });
   }
   if (!items.length) {
@@ -242,7 +283,7 @@ export function drawScene3D(
     nVert += it.mesh.positions.length / 3;
     const solid = l.style === "surf" || l.style === "surfc";
     const lined = l.style === "mesh" || l.style === "wire" || l.style === "surf" || l.style === "surfc";
-    if (solid || lined) it.proj = projectScene(it.mesh.positions, it.mesh.tris, cam, it.norms);
+    if (solid || lined) it.proj = projectScene(it.mesh.positions, it.mesh.tris, cam, it.d.norms);
     if (solid && it.proj) {
       nTri += it.proj.faces.length;
       for (const f of it.proj.faces) {
@@ -262,7 +303,7 @@ export function drawScene3D(
     }
     if ((l.style === "surf" || l.style === "mesh" || l.style === "wire") && it.proj) {
       /* 结构化网格取参数线（MATLAB mesh 观感，无对角线）；surf 只描稀疏网格线增强立体感 */
-      const e = meshEdges(it.mesh);
+      const e = it.d.edges;
       const v = it.proj.verts;
       const stride = l.style === "wire" ? 2 : l.style === "surf" ? 6 : 2;
       for (let i = 0; i + 1 < e.length; i += stride * 2) {
@@ -283,7 +324,7 @@ export function drawScene3D(
     if (l.style === "contour" || l.style === "surfc") {
       const base = l.style === "surfc";
       const zUse = base ? it.zmin : 0;
-      for (const c of meshContours(it.mesh, levelsOf(it.zmin, it.zmax, 12))) {
+      for (const c of it.d.contours) {
         const t = clamp01((c.level - it.zmin) / (it.zmax - it.zmin));
         const o = Math.round(t * 255) * 3;
         const col = base

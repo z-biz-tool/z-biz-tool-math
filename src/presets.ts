@@ -1,6 +1,6 @@
 /**
  * 示例库：每个模式一组「拿来就能看」的预设，覆盖各类函数图像、复平面、
- * 向量/场、动态几何构造与 MATLAB 风格的 3D 可视化。
+ * 向量/场、矩阵线性映射、神经网络决策边界、动态几何构造与 MATLAB 风格的 3D 可视化。
  */
 import { GeometryDoc } from "./core/geometry.ts";
 import type { Engine } from "./core/machine.ts";
@@ -11,7 +11,9 @@ import {
   type ComplexState,
   type GeoState,
   type Layer,
+  type LinState,
   type Mode,
+  type NnState,
   type Param,
   type SurfLayer,
   type SurfState,
@@ -29,6 +31,10 @@ export interface Preset {
   defs?: string[];
   cplx?: Partial<ComplexState>;
   vec?: Partial<VectorState>;
+  /** 线性：a 必须给满 dim² 格、b 给满 dim 格（与当前 dim 一致，否则格子数对不上） */
+  lin?: Partial<LinState>;
+  /** 神经网络：只给可序列化的超参数，模型由面板按它们重建 */
+  nn?: Partial<NnState>;
   surf?: Partial<SurfState>;
   /** 几何：给出一个全新的构造文档 */
   geo?: (doc: GeometryDoc, eng: Engine) => void;
@@ -292,6 +298,141 @@ export const PRESETS: Preset[] = [
     hint: "自动求奇点并按本征值分类",
     view: [0, 0, 70],
     vec: { fieldMode: "phase", fx: "y", fy: "-sin(x) - 0.25*y", density: 18, streamlineCount: 22 },
+  },
+
+  /* ------------------------------------------------------ 矩阵与线性映射 */
+  {
+    key: "lin-rot60",
+    title: "旋转 60°：无实特征向量",
+    mode: "lin",
+    hint: "单位圆映成自身，轨道沿圆周每步转 60°",
+    view: [0, 0, 118],
+    lin: {
+      dim: 2,
+      /* 格子交给表达式内核：把 pi/3 改成 pi/4 就是另一个角度，det 恒为 1 */
+      a: ["cos(pi/3)", "-sin(pi/3)", "sin(pi/3)", "cos(pi/3)"],
+      b: ["1", "0"],
+      showGrid: true,
+      showCircle: true,
+      showEllipse: true,
+      /* 特征值 ±i 不在实平面上，标出来只会留两处空白：靠像圆讲这个 */
+      showEigen: false,
+      showSVD: false,
+      showFlow: true,
+      t: 1,
+      useExp: false,
+    },
+  },
+  {
+    key: "lin-shear",
+    title: "剪切映射：亏损方向",
+    mode: "lin",
+    hint: "二重特征值 1 只配一个特征向量，面积不变",
+    view: [0, 0, 108],
+    params: () => [{ name: "a", value: 1, min: -2.5, max: 2.5, step: 0.02, animate: false, speed: 0.6 }],
+    lin: {
+      dim: 2,
+      /* (1,2) 格引用同名参数滑块 a：拖滑块即改剪切量，x 轴始终是被压住的方向 */
+      a: ["1", "a", "0", "1"],
+      b: ["2", "1"],
+      showGrid: true,
+      showCircle: true,
+      showEllipse: true,
+      showEigen: true,
+      showSVD: false,
+      showFlow: true,
+      t: 1,
+      useExp: false,
+    },
+  },
+  {
+    key: "lin-spectral",
+    title: "对称矩阵 · 主轴定理",
+    mode: "lin",
+    hint: "谱分解写进格子里：正交特征向量即像椭圆主轴",
+    view: [0, 0, 108],
+    lin: {
+      dim: 2,
+      /* A = 3uuᵀ + 1vvᵀ（u、v 是 ±45° 的两个正交方向）：改角度转主轴，改 3/1 换特征值 */
+      a: [
+        "3*cos(pi/4)^2 + sin(pi/4)^2",
+        "(3 - 1)*sin(pi/4)*cos(pi/4)",
+        "(3 - 1)*sin(pi/4)*cos(pi/4)",
+        "3*sin(pi/4)^2 + cos(pi/4)^2",
+      ],
+      b: ["1", "0"],
+      showGrid: true,
+      showCircle: true,
+      showEllipse: true,
+      showEigen: true,
+      /* 对称正定：奇异向量与特征向量重合，两条主轴叠在一起看最清楚 */
+      showSVD: true,
+      showFlow: false,
+      t: 1,
+      useExp: false,
+    },
+  },
+
+  /* ---------------------------------------------------------- 神经网络 */
+  {
+    key: "nn-moons",
+    title: "双月 · tanh",
+    mode: "nn",
+    hint: "两个 8 神经元隐藏层，tanh 咬合弯月分界",
+    view: [0, 0, 112],
+    nn: {
+      dataset: "moons",
+      samples: 200,
+      hidden: 8,
+      depth: 2,
+      act: "tanh",
+      lr: 0.08,
+      momentum: 0.9,
+      batch: 16,
+      seed: 5,
+      showBoundary: true,
+      boundaryRes: 112,
+    },
+  },
+  {
+    key: "nn-spiral",
+    title: "三臂螺旋 · 两层",
+    mode: "nn",
+    hint: "3 类螺旋：换 ReLU 并加宽到 12 才拧得开",
+    view: [0, 0, 104],
+    nn: {
+      dataset: "spiral",
+      samples: 240,
+      hidden: 12,
+      depth: 2,
+      act: "relu",
+      lr: 0.08,
+      momentum: 0.9,
+      batch: 24,
+      seed: 3,
+      showBoundary: true,
+      boundaryRes: 128,
+    },
+  },
+  {
+    key: "nn-xor",
+    title: "异或 · 单隐藏层",
+    mode: "nn",
+    hint: "线性不可分的最小例子：一层 4 个神经元足够",
+    view: [0, 0, 118],
+    nn: {
+      dataset: "xor",
+      samples: 160,
+      hidden: 4,
+      depth: 1,
+      act: "tanh",
+      lr: 0.1,
+      momentum: 0.9,
+      batch: 16,
+      seed: 7,
+      showBoundary: true,
+      boundaryRes: 96,
+    },
   },
 
   /* ---------------------------------------------------------- 曲面 */
@@ -607,6 +748,12 @@ export function applyPreset(key: string): void {
     params: params ?? st.params,
     cplx: p.cplx ? { ...st.cplx, ...p.cplx } : st.cplx,
     vec: p.vec ? { ...st.vec, ...p.vec } : st.vec,
+    lin: p.lin ? { ...st.lin, ...p.lin } : st.lin,
+    /* 神经网络预设只声明超参数：model/data 是活的 TypedArray（面板按新形状重建），
+       沿用上一次训练的模型会画出一条和当前 dataset/seed 对不上号的决策边界 */
+    nn: p.nn
+      ? { ...st.nn, ...p.nn, model: null, data: null, running: false, epochs: 0, loss: 0, acc: 0, curve: [] }
+      : st.nn,
     surf: p.surf ? { ...st.surf, ...p.surf } : st.surf,
     geo: geo ?? st.geo,
     revision: st.revision + 1,

@@ -2,19 +2,28 @@
  * 左侧面板：按工作模式提供各自的编辑界面。
  * 所有写回都走 useStore.getState() 的动作，组件只订阅自己渲染需要的切片。
  */
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Input, InputNumber, Segmented, Select, Slider, Switch, Tooltip } from "antd";
 import {
   DeleteOutlined,
   EyeInvisibleOutlined,
   EyeOutlined,
+  PauseOutlined,
+  PlayCircleOutlined,
   PlusOutlined,
   RedoOutlined,
+  ReloadOutlined,
   UndoOutlined,
 } from "@ant-design/icons";
 import { COLORMAPS } from "../core/colormap.ts";
+import { fmt, fmtC } from "../core/cnum.ts";
 import { GeometryDoc } from "../core/geometry.ts";
+import { det, eigen, identity, isSymmetric, matMul, rref, shape, solve, svd, transpose } from "../core/linalg.ts";
+import type { Mat } from "../core/linalg.ts";
+import { createModel, dataset as sampleDataset, makeCache, makeGrad, rng, trainEpoch } from "../core/nn.ts";
+import type { Act, Cache, Dataset, DatasetName, GradPack, Model } from "../core/nn.ts";
 import { evalString, show } from "../core/machine.ts";
+import { parseMatrix, parseVector } from "../core/parsemat.ts";
 import { clearSurfCache } from "../render/scene3d.ts";
 import { kindZh, toolZh } from "../render/scene2d.ts";
 import { useStore, uid } from "../state.ts";
@@ -22,6 +31,7 @@ import type {
   ConsoleLine,
   Layer,
   LayerKind,
+  NnState,
   SurfKind,
   SurfLayer,
   SurfStyle,
@@ -72,7 +82,7 @@ function Swatch({ value, onChange }: { value: string; onChange: (v: string) => v
     <input
       type="color"
       className="gl-swatch"
-      value={/^#[0-9a-f]{6}$/i.test(value) ? value : "#8b7cf6"}
+      value={/^#[0-9a-f]{6}$/i.test(value) ? value : "#667eea"}
       onChange={(e) => onChange(e.target.value)}
     />
   );
@@ -127,6 +137,29 @@ function Eye({ on, onClick }: { on: boolean; onClick: () => void }) {
 }
 
 const exprStyle: React.CSSProperties = { fontFamily: "SF Mono, Menlo, monospace", fontSize: 12.5 };
+
+/** 读数行：左标签右数值，数值一律等宽，多个读数并排时不会跳动 */
+function Stat({ k, v }: { k: string; v: string }) {
+  return (
+    <div className="gl-row" style={{ gap: 8, alignItems: "baseline" }}>
+      <span style={{ fontSize: 11.5, width: 84, flex: "none", opacity: 0.72 }}>{k}</span>
+      <span className="gl-mono gl-grow" style={{ textAlign: "right", wordBreak: "break-word" }}>
+        {v}
+      </span>
+    </div>
+  );
+}
+
+/** 面板内联的解析错误：与控制台同一条红，但不占用画布上的公告位 */
+function ErrNote({ msg }: { msg: string }) {
+  return (
+    <div style={{ fontSize: 11.5, lineHeight: 1.7, color: "#fca5a5", whiteSpace: "pre-wrap" }}>{msg}</div>
+  );
+}
+
+const HintNote = ({ children }: { children: React.ReactNode }) => (
+  <div style={{ fontSize: 11.5, opacity: 0.66, lineHeight: 1.7 }}>{children}</div>
+);
 
 /* ------------------------------------------------------------ 函数模式 */
 
@@ -336,6 +369,34 @@ const TOOLS: ToolKind[] = [
   "erase",
 ];
 
+/** 每个工具一个可辨识字形（均已在 PingFang SC / system-ui 下实测有墨，不会退化成豆腐块） */
+const TOOL_GLYPH: Record<ToolKind, string> = {
+  select: "↖",
+  point: "●",
+  segment: "─",
+  line: "╱",
+  ray: "→",
+  vector: "⇀",
+  circle: "○",
+  arc: "⌒",
+  ellipse: "⬭",
+  polygon: "△",
+  midpoint: "⊙",
+  intersection: "⊗",
+  perpendicular: "⊥",
+  parallel: "∥",
+  bisector: "⊾",
+  pointOn: "∈",
+  locus: "∿",
+  rotate: "↻",
+  reflect: "⇄",
+  dilate: "⤢",
+  angle: "∠",
+  area: "▦",
+  text: "T",
+  erase: "✕",
+};
+
 function GeoPanel() {
   const geo = useStore((s) => s.geo);
   const doc = geo.doc;
@@ -354,7 +415,7 @@ function GeoPanel() {
               title={toolZh(t)}
               onClick={() => useStore.getState().setGeo({ tool: t, pending: [] })}
             >
-              <span style={{ fontSize: 14 }}>{t === "select" ? "↖" : t === "erase" ? "✕" : "·"}</span>
+              <span style={{ fontSize: 15, lineHeight: "18px" }}>{TOOL_GLYPH[t]}</span>
               <span>{toolZh(t)}</span>
             </button>
           ))}
@@ -613,6 +674,531 @@ function VectorPanel() {
   );
 }
 
+/* ------------------------------------------------------------ 线性代数模式 */
+
+const LIN_DIMS = [
+  { value: 2, label: "2 × 2" },
+  { value: 3, label: "3 × 3" },
+];
+
+/** 扩维时按单位矩阵补格：原来的二维变换作为左上块保留，新方向先是恒等 */
+const LIN_PAD = ["1", "0", "0", "0", "1", "0", "0", "0", "1"];
+
+interface LinReadout {
+  n: number;
+  det: number;
+  trace: number;
+  rank: number;
+  eig: string;
+  sing: string;
+  /** 奇异值之积：方阵时应与 |det| 相等，这条对照是给学生自查的 */
+  area: number;
+  fro: number;
+  sol: string;
+  sym: boolean;
+  /** |A^T A − I| 的 F 范数：为 0 才是正交阵，只报实算值不下结论 */
+  orth: number;
+}
+
+function linReadout(a: Mat, b: number[]): LinReadout {
+  const n = shape(a)[0];
+  const { rank } = rref(a);
+  /**
+   * eigen() 各条路径的次序并不统一（对称阵走 Jacobi 降序、2×2 先给 (tr+√)/2），
+   * 直接列出来会让改一个格子时整个列表重排，所以展示前统一按实部降序。
+   */
+  const eig = eigen(a)
+    .slice()
+    .sort((x, y) => y.re - x.re || y.im - x.im)
+    .map((z) => fmtC(z.re, z.im, 3))
+    .join("，");
+  const { s, area } = svd(a);
+  const eye = identity(n);
+  const ata = matMul(transpose(a), a);
+  let sol = "无唯一解（秩亏）";
+  if (rank === n) {
+    try {
+      sol = `x = (${solve(a, b).map((v) => fmt(v, 3)).join("，")})`;
+    } catch (e) {
+      sol = e instanceof Error ? e.message : "求解失败";
+    }
+  }
+  return {
+    n,
+    det: det(a),
+    trace: a.reduce((t, row, i) => t + row[i], 0),
+    rank,
+    eig,
+    sing: s.map((v) => fmt(v, 3)).join("，"),
+    area,
+    fro: Math.hypot(...a.flat()),
+    sol,
+    sym: isSymmetric(a),
+    orth: Math.hypot(...ata.flatMap((row, i) => row.map((v, j) => v - eye[i][j]))),
+  };
+}
+
+function LinPanel() {
+  const lin = useStore((s) => s.lin);
+  const engine = useStore((s) => s.engine);
+  const setLin = useStore((s) => s.setLin);
+  /** 格子里可以引用参数滑块，滑块一动读数值就变了，所以签名里要带上现值 */
+  const paramSig = useStore((s) => s.params.map((p) => `${p.name}=${p.value}`).join("|"));
+
+  const setCell = (i: number, v: string) => {
+    const a = lin.a.slice();
+    a[i] = v;
+    setLin({ a });
+  };
+  const setElem = (i: number, v: string) => {
+    const b = lin.b.slice();
+    b[i] = v;
+    setLin({ b });
+  };
+  const resize = (dim: 2 | 3) => {
+    /**
+     * 换维必须按行列重排：行优先串的长度一变化旧矩阵的下标就整体错位，
+     * 直接 slice/push 会把原矩阵的第二行抖到新矩阵的第一行末尾。
+     */
+    const old = lin.dim;
+    const a: string[] = [];
+    for (let i = 0; i < dim; i++)
+      for (let j = 0; j < dim; j++)
+        a.push(i < old && j < old ? (lin.a[i * old + j] ?? LIN_PAD[i * dim + j]) : LIN_PAD[i * dim + j]);
+    const b: string[] = [];
+    for (let i = 0; i < dim; i++) b.push(i < old ? lin.b[i] : "0");
+    // 画布只有 2×2 的闭式矩阵指数，升到三维必须回到离散幂次
+    if (dim === 3) setLin({ dim, a, b, useExp: false });
+    else setLin({ dim, a, b });
+  };
+  const setExp = (on: boolean) => {
+    // t 的含义在两种模式下不同（整数幂次 ↔ 流时间），切换时把值夹进新范围
+    const t = on ? Math.max(-2, Math.min(2, lin.t)) : Math.max(0, Math.min(6, lin.t));
+    setLin({ useExp: on, t });
+  };
+
+  /** 依赖取「输入指纹」而不是数组本身：LU/SVD 不该在每次按键触发的重渲染里重跑 */
+  const sig = `${lin.dim}|${lin.a.join("\u0001")}|${lin.b.join("\u0001")}|${paramSig}`;
+  const parsed = useMemo(() => {
+    try {
+      return {
+        ro: linReadout(parseMatrix(engine, lin.a, lin.dim), parseVector(engine, lin.b, lin.dim)),
+        err: "",
+      };
+    } catch (e) {
+      return { ro: null as LinReadout | null, err: e instanceof Error ? e.message : String(e) };
+    }
+  }, [sig]);
+  /** 改一格可能只是表达式写了一半，这时保留上一次读数而不是把整块清空 */
+  const good = useRef<LinReadout | null>(parsed.ro);
+  if (parsed.ro) good.current = parsed.ro;
+  const ro = good.current;
+
+  const grid: React.CSSProperties = {
+    display: "grid",
+    gridTemplateColumns: `repeat(${lin.dim}, minmax(0, 1fr))`,
+    gap: 6,
+    flex: 1,
+    minWidth: 0,
+  };
+  const bracket: React.CSSProperties = { fontSize: 34, fontWeight: 300, lineHeight: 1, color: "var(--gl-muted)" };
+  return (
+    <div className="gl-panel">
+      <Card title="矩阵 A（每格一个表达式）">
+        <Segmented size="small" block value={lin.dim} options={LIN_DIMS} onChange={(v) => resize(v as 2 | 3)} />
+        <Row>
+          <span style={bracket}>[</span>
+          <div style={grid}>
+            {lin.a.map((v, i) => (
+              <Input
+                key={i}
+                size="small"
+                style={exprStyle}
+                value={v}
+                placeholder="0"
+                onChange={(e) => setCell(i, e.target.value)}
+              />
+            ))}
+          </div>
+          <span style={bracket}>]</span>
+        </Row>
+        <HintNote>
+          行优先排列，格子里可写 sin(pi/3)、2^3 这类表达式，也可直接引用底部参数滑块 a、b（拖动即时重算）。
+        </HintNote>
+      </Card>
+      <Card title="右端项 b">
+        <Row>
+          <span style={{ fontSize: 11.5, width: 34, flex: "none" }}>b =</span>
+          <div style={grid}>
+            {lin.b.map((v, i) => (
+              <Input
+                key={i}
+                size="small"
+                style={exprStyle}
+                value={v}
+                placeholder="0"
+                onChange={(e) => setElem(i, e.target.value)}
+              />
+            ))}
+          </div>
+        </Row>
+      </Card>
+      <Card title="画什么">
+        <Toggle label="整数网格线的像" on={lin.showGrid} onChange={(v) => setLin({ showGrid: v })} />
+        <Toggle label="单位圆（原像）" on={lin.showCircle} onChange={(v) => setLin({ showCircle: v })} />
+        <Toggle label="单位圆的像" on={lin.showEllipse} onChange={(v) => setLin({ showEllipse: v })} />
+        <Toggle label="实特征向量" on={lin.showEigen} onChange={(v) => setLin({ showEigen: v })} />
+        <Toggle label="SVD 奇异向量与主轴" on={lin.showSVD} onChange={(v) => setLin({ showSVD: v })} />
+        <Toggle label="轨道 p ↦ A·p" on={lin.showFlow} onChange={(v) => setLin({ showFlow: v })} />
+        <Slide
+          label={lin.useExp ? "t（流时间）" : "k（离散幂次）"}
+          value={lin.t}
+          min={lin.useExp ? -2 : 0}
+          max={lin.useExp ? 2 : 6}
+          step={lin.useExp ? 0.02 : 1}
+          onChange={(v) => setLin({ t: v })}
+        />
+        <Row>
+          <Tooltip
+            title={
+              lin.dim === 3
+                ? "三维矩阵指数尚未实现：画布只用 2×2 的 Cayley–Hamilton 闭式解，三维请回到离散幂次 A^k"
+                : "关：画 A 的整数幂 A^k；开：画连续流 e^(tA)，即线性系统 dx/dt = A·x"
+            }
+          >
+            <span className="gl-grow" style={{ fontSize: 12 }}>
+              连续流 e^(tA)（矩阵指数）
+            </span>
+          </Tooltip>
+          <Switch size="small" checked={lin.useExp} disabled={lin.dim === 3} onChange={setExp} />
+        </Row>
+        {lin.dim === 3 && <HintNote>三维下矩阵指数不可用，开关已锁定为离散幂次 A^k。</HintNote>}
+      </Card>
+      <Card title="读数">
+        {parsed.err && <ErrNote msg={`解析失败：${parsed.err}`} />}
+        {ro ? (
+          <>
+            <Stat k="det A" v={fmt(ro.det, 4)} />
+            <Stat k="迹 tr(A)" v={fmt(ro.trace, 4)} />
+            <Stat k="秩 rank" v={`${ro.rank} / ${ro.n}`} />
+            <Stat k="特征值 λ" v={ro.eig} />
+            <Stat k="奇异值 σ" v={ro.sing} />
+            <Stat k="Frobenius" v={fmt(ro.fro, 4)} />
+            <Stat k="Ax = b" v={ro.sol} />
+            <Stat k="对称 A = A^T" v={ro.sym ? "是" : "否"} />
+            <Stat k="|A^TA − I|" v={fmt(ro.orth, 4)} />
+            <HintNote>
+              面积放大率 |det A| = {fmt(Math.abs(ro.det), 4)}，σ 之积 = {fmt(ro.area, 4)}（两者相等说明 SVD 与行列式自洽）。
+              |A^TA − I| = {fmt(ro.orth, 3)} {ro.orth < 1e-6 ? "，即正交阵：保长度与夹角。" : "，不为 0，非正交阵。"}
+            </HintNote>
+          </>
+        ) : (
+          <HintNote>把每一格填成实数表达式后显示读数。</HintNote>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ 神经网络模式 */
+
+const NN_DATASETS: { value: DatasetName; label: string }[] = [
+  { value: "xor", label: "异或" },
+  { value: "circle", label: "同心圆" },
+  { value: "moons", label: "双月" },
+  { value: "spiral", label: "三臂螺旋" },
+];
+
+const NN_ACTS: { value: Act; label: string }[] = [
+  { value: "tanh", label: "tanh 双曲正切" },
+  { value: "relu", label: "ReLU 线性修正" },
+  { value: "sigmoid", label: "Sigmoid S 型" },
+];
+
+/** 迷你曲线保留的点数上限 */
+const CURVE_MAX = 240;
+/** 一帧里训练的时间预算（ms），剩下的时间还给画布与输入事件 */
+const EPOCH_BUDGET_MS = 8;
+
+/**
+ * 曲线封顶的方式是隔点抽稀而不是滑窗丢弃：本机一帧能跑 20+ 轮，
+ * 严格保留「最后 240 轮」时曲线里永远只剩收敛末尾的一条平线，
+ * 抽稀后第一轮的 0.7 仍在，整条下降过程都看得见，而点数依旧 ≤ CURVE_MAX。
+ */
+function pushCurve(curve: number[], add: number[]): number[] {
+  let out = curve.length ? curve.concat(add) : add.slice();
+  while (out.length > CURVE_MAX) {
+    const thin = out.filter((_, i) => i % 2 === 0);
+    out = thin.length >= 2 ? thin : out.slice(-CURVE_MAX);
+  }
+  return out;
+}
+
+interface TrainKit {
+  cache: Cache;
+  g: GradPack;
+  vel: GradPack;
+  r: () => number;
+}
+
+/**
+ * 模型与训练缓冲按身份键活在模块作用域：面板切到别的模式会卸载，
+ * 但训练成果必须还在，回来接着练。
+ */
+let nnKey = "";
+let nnKit: TrainKit | null = null;
+
+type NnConfig = Pick<NnState, "dataset" | "samples" | "hidden" | "depth" | "act" | "seed">;
+
+/** 决定「是不是同一张网络」的只有这六项；lr/动量/batch 是优化器的量，改它们不能重建 */
+const nnIdent = (c: NnConfig): string => `${c.dataset}|${c.samples}|${c.hidden}|${c.depth}|${c.act}|${c.seed}`;
+
+function buildNn(c: NnConfig): { model: Model; data: Dataset; kit: TrainKit } {
+  const data = sampleDataset(c.dataset, c.samples, c.seed);
+  const model = createModel([2, ...Array(Math.max(1, Math.round(c.depth))).fill(Math.max(1, c.hidden)), data.k], c.act, c.seed);
+  return {
+    model,
+    data,
+    kit: { cache: makeCache(model), g: makeGrad(model), vel: makeGrad(model), r: rng(c.seed * 7919 + 13) },
+  };
+}
+
+function nnParamCount(m: Model | null): number {
+  return m ? m.layers.reduce((s, L) => s + L.w.length + L.b.length, 0) : 0;
+}
+
+/** 迷你 loss 曲线：内联小画布，用外壳那条紫色渐变 */
+function LossCurve({ data }: { data: number[] }) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const cv = ref.current;
+    if (!cv) return;
+    const w = cv.clientWidth;
+    const h = cv.clientHeight;
+    if (w < 4 || h < 4) return;
+    const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+    const pw = Math.floor(w * dpr);
+    const ph = Math.floor(h * dpr);
+    if (cv.width !== pw || cv.height !== ph) {
+      cv.width = pw;
+      cv.height = ph;
+    }
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (data.length < 2) return;
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (const v of data) {
+      if (v > hi) hi = v;
+      if (v < lo) lo = v;
+    }
+    /** 交叉熵从 0.7 掉到 0.001 跨三个数量级，线性纵轴会把后期收敛压成一条贴底直线 */
+    const log = hi > 0 && lo > 0 && hi / lo > 40;
+    const tf = (v: number) => (log ? Math.log(Math.max(v, 1e-12)) : v);
+    const [th, tl] = [tf(hi), tf(lo)];
+    const span = th - tl || 1;
+    const px = (i: number) => (i / (data.length - 1)) * w;
+    const py = (v: number) => h - 3 - ((tf(v) - tl) / span) * (h - 6);
+    const stroke = ctx.createLinearGradient(0, 0, w, 0);
+    stroke.addColorStop(0, "#667eea");
+    stroke.addColorStop(1, "#764ba2");
+    ctx.beginPath();
+    data.forEach((v, i) => (i ? ctx.lineTo(px(i), py(v)) : ctx.moveTo(px(i), py(v))));
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1.6;
+    ctx.lineJoin = "round";
+    ctx.stroke();
+    const fill = ctx.createLinearGradient(0, 0, 0, h);
+    fill.addColorStop(0, "rgba(102, 126, 234, 0.28)");
+    fill.addColorStop(1, "rgba(118, 75, 162, 0.02)");
+    ctx.lineTo(w, h);
+    ctx.lineTo(0, h);
+    ctx.closePath();
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }, [data]);
+  return (
+    <canvas
+      ref={ref}
+      style={{ display: "block", width: "100%", height: 56, borderRadius: 8, border: "1px solid var(--gl-line)" }}
+    />
+  );
+}
+
+function NnPanel() {
+  const nn = useStore((s) => s.nn);
+  const setNn = useStore((s) => s.setNn);
+  const rafId = useRef(0);
+  const burstId = useRef(0);
+  const [burst, setBurst] = useState<number | null>(null);
+  const key = nnIdent(nn);
+
+  /** 新建同尺寸的随机初始化模型并接管训练缓冲；身份变化与「重置」走同一条路径 */
+  const rebuild = useCallback(() => {
+    const cur = useStore.getState().nn;
+    const built = buildNn(cur);
+    nnKey = nnIdent(cur);
+    nnKit = built.kit;
+    setNn({ model: built.model, data: built.data, epochs: 0, loss: 0, acc: 0, curve: [] });
+  }, [setNn]);
+
+  /**
+   * 训练是原地改 model 权重的，重建等于把训练清零：
+   * 所以这里只在身份键变化（或模型丢失）时重建，其余渲染一律不动。
+   */
+  useEffect(() => {
+    const cur = useStore.getState().nn;
+    if (nnKey === key && nnKit && cur.model && cur.data) return;
+    rebuild();
+  }, [key, rebuild]);
+
+  /* 唯一的训练循环：一帧内跑满 8ms 预算、只提交一次 store，
+     既不让每个控件各起一个 rAF，也不会一帧写几十次 revision。 */
+  useEffect(() => {
+    if (!nn.running) return;
+    const tick = () => {
+      const st = useStore.getState();
+      const kit = nnKit;
+      if (!st.nn.running || !kit || !st.nn.model || !st.nn.data) return;
+      const opt = { lr: st.nn.lr, momentum: st.nn.momentum, batch: st.nn.batch };
+      const t0 = performance.now();
+      const losses: number[] = [];
+      let acc = st.nn.acc;
+      do {
+        const s = trainEpoch(st.nn.model, st.nn.data, opt, kit.r, kit.cache, kit.g, kit.vel);
+        losses.push(s.loss);
+        acc = s.acc;
+      } while (performance.now() - t0 < EPOCH_BUDGET_MS);
+      const curve = pushCurve(st.nn.curve, losses);
+      st.setNn({
+        epochs: st.nn.epochs + losses.length,
+        loss: losses[losses.length - 1],
+        acc,
+        curve,
+        running: true,
+      });
+      rafId.current = requestAnimationFrame(tick);
+    };
+    rafId.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId.current);
+  }, [nn.running]);
+
+  /* 卸载时收回两条 rAF：训练循环靠 running 变假自动停，补练定时器得显式取消 */
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(rafId.current);
+      cancelAnimationFrame(burstId.current);
+    },
+    [],
+  );
+
+  /** 单跑 100 轮：按帧切片推进，界面能看到轮次在涨而不是白屏卡住 */
+  const burst100 = () => {
+    cancelAnimationFrame(burstId.current);
+    const total = 100;
+    let done = 0;
+    let loss = 0;
+    let acc = 0;
+    const step = () => {
+      const st = useStore.getState();
+      const kit = nnKit;
+      if (!kit || !st.nn.model || !st.nn.data) {
+        setBurst(null);
+        return;
+      }
+      const opt = { lr: st.nn.lr, momentum: st.nn.momentum, batch: st.nn.batch };
+      const t0 = performance.now();
+      const losses: number[] = [];
+      while (done < total && performance.now() - t0 < EPOCH_BUDGET_MS) {
+        const s = trainEpoch(st.nn.model, st.nn.data, opt, kit.r, kit.cache, kit.g, kit.vel);
+        losses.push(s.loss);
+        loss = s.loss;
+        acc = s.acc;
+        done++;
+      }
+      st.setNn({
+        epochs: st.nn.epochs + losses.length,
+        loss,
+        acc,
+        curve: pushCurve(st.nn.curve, losses),
+      });
+      setBurst(done < total ? done : null);
+      if (done < total) burstId.current = requestAnimationFrame(step);
+      else burstId.current = 0;
+    };
+    burstId.current = requestAnimationFrame(step);
+  };
+
+  const toggleRun = () => {
+    cancelAnimationFrame(burstId.current);
+    burstId.current = 0;
+    setBurst(null);
+    setNn({ running: !nn.running });
+  };
+
+  return (
+    <div className="gl-panel">
+      <Card title="数据与网络">
+        <Row>
+          <span style={{ fontSize: 11.5, width: 42, flex: "none" }}>数据集</span>
+          <Select size="small" className="gl-grow" value={nn.dataset} options={NN_DATASETS} onChange={(v: DatasetName) => setNn({ dataset: v })} />
+        </Row>
+        <Row>
+          <span style={{ fontSize: 11.5, width: 42, flex: "none" }}>激活</span>
+          <Select size="small" className="gl-grow" value={nn.act} options={NN_ACTS} onChange={(v: Act) => setNn({ act: v })} />
+        </Row>
+        <Slide label="样本数" value={nn.samples} min={40} max={600} step={20} onChange={(v) => setNn({ samples: v })} />
+        <Slide label="隐藏层宽度" value={nn.hidden} min={2} max={24} step={1} onChange={(v) => setNn({ hidden: v })} />
+        <Slide label="隐藏层数" value={nn.depth} min={1} max={4} step={1} onChange={(v) => setNn({ depth: v })} />
+        <Slide label="随机种子" value={nn.seed} min={1} max={200} step={1} onChange={(v) => setNn({ seed: v })} />
+        <HintNote>
+          结构 [2, {Array.from({ length: Math.max(1, nn.depth) }).fill(nn.hidden).join(", ")}, 类别数]；
+          改数据集、宽度、层数、激活或种子都会重建网络（训练清零），改学习率一类只换优化器节奏。
+        </HintNote>
+      </Card>
+      <Card title="优化器">
+        <Slide label="学习率 lr" value={nn.lr} min={0.002} max={0.3} step={0.002} onChange={(v) => setNn({ lr: v })} />
+        <Slide label="动量" value={nn.momentum} min={0} max={0.99} step={0.01} onChange={(v) => setNn({ momentum: v })} />
+        <Slide label="批大小" value={nn.batch} min={1} max={64} step={1} onChange={(v) => setNn({ batch: v })} />
+        <Slide label="边界栅格分辨率" value={nn.boundaryRes} min={24} max={200} step={4} onChange={(v) => setNn({ boundaryRes: v })} />
+        <Toggle label="决策边界着色" on={nn.showBoundary} onChange={(v) => setNn({ showBoundary: v })} />
+      </Card>
+      <Card title="训练">
+        <Row>
+          <Button
+            size="small"
+            type="primary"
+            className="gl-grow"
+            icon={nn.running ? <PauseOutlined /> : <PlayCircleOutlined />}
+            onClick={toggleRun}
+          >
+            {nn.running ? "暂停" : "训练"}
+          </Button>
+          <Button size="small" icon={<ReloadOutlined />} onClick={rebuild}>
+            重置
+          </Button>
+        </Row>
+        <Row>
+          <Tooltip title="与连续训练互斥：一次补 100 轮，按帧切片跑完">
+            <Button size="small" className="gl-grow" disabled={nn.running || burst !== null} onClick={burst100}>
+              {burst === null ? "训练 100 轮" : `补练中 ${burst}/100`}
+            </Button>
+          </Tooltip>
+        </Row>
+        <Stat k="轮次" v={String(nn.epochs)} />
+        <Stat k="损失 loss" v={nn.curve.length ? fmt(nn.loss, 5) : "—"} />
+        <Stat k="正确率" v={nn.model ? `${fmt(nn.acc * 100, 2)} %` : "—"} />
+        <Stat k="可训练参数" v={nn.model ? String(nnParamCount(nn.model)) : "—"} />
+        <LossCurve data={nn.curve} />
+        <HintNote>曲线最多 {CURVE_MAX} 点，超出后隔点抽稀（首点必定保留）；纵轴自动取对数。</HintNote>
+        {nn.model === null && <ErrNote msg="模型尚未建立。" />}
+      </Card>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------ 曲面模式 */
 
 const SURF_KINDS: { value: SurfKind; label: string }[] = [
@@ -733,7 +1319,7 @@ function SurfPanel() {
                     res: 70,
                     range: [-3, 3, -3, 3],
                     visible: true,
-                    color: "#8b7cf6",
+                    color: "#667eea",
                     opacity: 1,
                     lit: true,
                     label: "新曲面",
@@ -879,6 +1465,10 @@ export default function SidePanel() {
       return <ComplexPanel />;
     case "vector":
       return <VectorPanel />;
+    case "lin":
+      return <LinPanel />;
+    case "nn":
+      return <NnPanel />;
     case "surf":
       return <SurfPanel />;
     default:

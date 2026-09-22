@@ -19,5 +19,16 @@ export default defineConfig({
   },
   build: {
     target: "es2022",
+    rollupOptions: {
+      output: {
+        /* 界面库占产物八成体积，与运行时、自有代码分开发，
+           改表达式内核或调画法不必让用户重下一份 antd */
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return;
+          const ui = /[/\\](antd|@ant-design|rc-[^/\\]+|@rc-component)[/\\]/.test(id);
+          return ui ? "ui" : "runtime";
+        },
+      },
+    },
   },
 });

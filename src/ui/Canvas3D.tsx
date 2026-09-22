@@ -10,6 +10,7 @@ export default function Canvas3D() {
   const wrap = useRef<HTMLDivElement>(null);
   const cv = useRef<HTMLCanvasElement>(null);
   const drag = useRef<{ x: number; y: number } | null>(null);
+  const frame = useRef(0);
   const [hud, setHud] = useState<{ errors: string[]; info: string[] }>({ errors: [], info: [] });
   const [fit, setFit] = useState(0);
   const revision = useStore((s) => s.revision);
@@ -49,17 +50,34 @@ export default function Canvas3D() {
     if (vp.width !== w || vp.height !== h) st.setView("surf", vp.with({ width: w, height: h }));
   }, []);
 
+  /** 轨道拖动时 pointermove 比帧还快，合并到每帧一次 */
+  const schedule = useCallback(() => {
+    if (frame.current) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = 0;
+      draw();
+    });
+  }, [draw]);
+
   useEffect(() => {
-    draw();
-  }, [draw, revision, camSig]);
+    schedule();
+  }, [schedule, revision, camSig]);
 
   useEffect(() => {
     const el = wrap.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => draw());
+    const ro = new ResizeObserver(() => schedule());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [draw]);
+  }, [schedule]);
+
+  useEffect(
+    () => () => {
+      if (frame.current) cancelAnimationFrame(frame.current);
+      frame.current = 0;
+    },
+    [],
+  );
 
   useEffect(() => {
     const canvas = cv.current;

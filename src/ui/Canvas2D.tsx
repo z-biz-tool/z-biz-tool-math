@@ -6,7 +6,15 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as P from "../render/plot2d.ts";
-import { applyGeoTool, drawScene2D, probe } from "../render/scene2d.ts";
+import {
+  applyGeoTool,
+  drawScene2D,
+  probe,
+  rasterJobFor,
+  rasterKeyOf,
+  stepRasterJob,
+  type RasterJob,
+} from "../render/scene2d.ts";
 import { niceTicks } from "../core/view.ts";
 import { useStore } from "../state.ts";
 
@@ -26,6 +34,13 @@ function fmt(v: number): string {
   return String(Number(v.toFixed(4)));
 }
 
+/** 两次输入间隔短于此值即判定为连续交互（拖动 / 缩放 / 参数动画） */
+const INTERACTIVE_MS = 130;
+/** 一帧预算：上一帧超出此值说明画面本身够重，新来的输入先按降质档画 */
+const FRAME_MS = 16;
+/** 停手后逐带回补时留给采样器的时间；留出余量给合成与叠加层 */
+const REFINE_BUDGET_MS = 8;
+
 export default function Canvas2D() {
   const wrap = useRef<HTMLDivElement>(null);
   const base = useRef<HTMLCanvasElement>(null);
@@ -33,6 +48,14 @@ export default function Canvas2D() {
   const size = useRef<Size>({ w: 900, h: 620, dpr: 1 });
   const hover = useRef<{ sx: number; sy: number } | null>(null);
   const drag = useRef<{ type: "pan"; lx: number; ly: number } | { type: "point"; id: string } | null>(null);
+  const frame = useRef(0);
+  const settle = useRef(0);
+  const lastAt = useRef(0);
+  const pendingDraft = useRef(false);
+  const lastCost = useRef(0);
+  /** 栅格续算：跨 rAF 逐行采样的缓冲，画完之后本帧直接贴用它 */
+  const job = useRef<RasterJob | null>(null);
+  const refine = useRef(0);
   const [hud, setHud] = useState<{ errors: string[]; info: string[] }>({ errors: [], info: [] });
   const [note, setNote] = useState<string | null>(null);
   const [cursor, setCursor] = useState("crosshair");
@@ -96,45 +119,139 @@ export default function Canvas2D() {
   }, []);
 
   /** 重画场景（底层），尺寸未同步时先写回视口再等下一次通知 */
-  const draw = useCallback(() => {
-    const el = wrap.current;
-    const cv = base.current;
-    if (!el || !cv) return;
-    const rect = el.getBoundingClientRect();
-    const w = Math.max(1, Math.floor(rect.width));
-    const h = Math.max(1, Math.floor(rect.height));
-    const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+  const draw = useCallback(
+    (draft: boolean) => {
+      const el = wrap.current;
+      const cv = base.current;
+      if (!el || !cv) return;
+      const rect = el.getBoundingClientRect();
+      const w = Math.max(1, Math.floor(rect.width));
+      const h = Math.max(1, Math.floor(rect.height));
+      const dpr = Math.min(2.5, window.devicePixelRatio || 1);
+      const st = useStore.getState();
+      const vp = st.views[st.mode];
+      if (vp.width !== w || vp.height !== h) {
+        st.setView(st.mode, vp.with({ width: w, height: h }));
+        return;
+      }
+      size.current = { w, h, dpr };
+      const pw = Math.floor(w * dpr);
+      const ph = Math.floor(h * dpr);
+      if (cv.width !== pw || cv.height !== ph) {
+        cv.width = pw;
+        cv.height = ph;
+      }
+      const ctx = cv.getContext("2d");
+      if (!ctx) return;
+      // 改写 width/height 会把变换重置为单位矩阵，必须每次重新按 dpr 缩放
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const out = drawScene2D({ ctx, vp, w, h, dark: st.settings.dark }, st, {
+        draft,
+        raster: draft ? null : job.current,
+      });
+      setHud((prev) => (same(prev.errors, out.errors) && same(prev.info, out.info) ? prev : { errors: out.errors, info: out.info }));
+      overlay();
+    },
+    [overlay],
+  );
+
+  /* 停手后的全质量回补：整幅栅格一帧干不完（几百毫秒），
+     于是逐带采样、每带用完 8ms 预算就让出一帧，画满再一次性换上锐利图像。 */
+  const refineStep = useCallback(() => {
+    refine.current = 0;
     const st = useStore.getState();
-    const vp = st.views[st.mode];
-    if (vp.width !== w || vp.height !== h) {
-      st.setView(st.mode, vp.with({ width: w, height: h }));
+    const j = job.current;
+    if (!j) return;
+    const r = stepRasterJob(st, j, REFINE_BUDGET_MS);
+    if (r === "done") {
+      draw(false);
       return;
     }
-    size.current = { w, h, dpr };
-    const pw = Math.floor(w * dpr);
-    const ph = Math.floor(h * dpr);
-    if (cv.width !== pw || cv.height !== ph) {
-      cv.width = pw;
-      cv.height = ph;
+    if (r === "stale") {
+      job.current = rasterJobFor(st, size.current.w, size.current.h);
+      if (!job.current) return;
     }
-    const ctx = cv.getContext("2d");
-    if (!ctx) return;
-    const out = drawScene2D({ ctx, vp, w, h, dark: st.settings.dark }, st);
-    setHud((prev) => (same(prev.errors, out.errors) && same(prev.info, out.info) ? prev : { errors: out.errors, info: out.info }));
-    overlay();
-  }, [overlay]);
+    refine.current = requestAnimationFrame(refineStep);
+  }, [draw]);
+
+  const stopRefine = useCallback(() => {
+    if (refine.current) cancelAnimationFrame(refine.current);
+    refine.current = 0;
+  }, []);
+
+  const startRefine = useCallback(() => {
+    const st = useStore.getState();
+    const { w, h } = size.current;
+    const key = rasterKeyOf(st, w, h);
+    const kept = job.current;
+    // 非栅格模式一帧就够；栅格身份没变且已画完则直接贴现有结果
+    if (key === null || (kept && kept.key === key && kept.rows === kept.h)) {
+      draw(false);
+      return;
+    }
+    if (!kept || kept.key !== key) job.current = rasterJobFor(st, w, h);
+    if (!job.current) {
+      draw(false);
+      return;
+    }
+    stopRefine();
+    refine.current = requestAnimationFrame(refineStep);
+  }, [draw, refineStep, stopRefine]);
+
+  /* 一帧内可能有多个 wheel / pointermove，逐次同步重画会把几十毫秒的活干好几遍；
+     所以统一排到 requestAnimationFrame，每帧最多画一次。
+     降质档必须在「输入到达」时判定：一次全质量本身就要几百毫秒，
+     等到真正开画时任何时间窗都已经过期，就再也进不去降质了。 */
+  const step = useCallback(() => {
+    frame.current = 0;
+    const draft = pendingDraft.current;
+    pendingDraft.current = false;
+    const t0 = performance.now();
+    draw(draft);
+    lastCost.current = performance.now() - t0;
+    if (!draft) return;
+    window.clearTimeout(settle.current);
+    settle.current = window.setTimeout(() => {
+      settle.current = 0;
+      if (!frame.current && !refine.current) startRefine();
+    }, INTERACTIVE_MS);
+  }, [draw, startRefine]);
+
+  const schedule = useCallback(() => {
+    const now = performance.now();
+    pendingDraft.current = now - lastAt.current < INTERACTIVE_MS || lastCost.current > FRAME_MS;
+    lastAt.current = now;
+    // 输入还在继续：回补得立刻让路，否则锐利图会卡在拖动中间盖住新画面
+    stopRefine();
+    if (settle.current) window.clearTimeout(settle.current);
+    settle.current = 0;
+    if (!frame.current) frame.current = requestAnimationFrame(step);
+  }, [step, stopRefine]);
 
   useEffect(() => {
-    draw();
-  }, [draw, mode, revision, viewSig]);
+    schedule();
+  }, [schedule, mode, revision, viewSig]);
 
   useEffect(() => {
     const el = wrap.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(() => draw());
+    const ro = new ResizeObserver(() => schedule());
     ro.observe(el);
     return () => ro.disconnect();
-  }, [draw]);
+  }, [schedule]);
+
+  useEffect(
+    () => () => {
+      if (frame.current) cancelAnimationFrame(frame.current);
+      if (settle.current) window.clearTimeout(settle.current);
+      /* 分带回补的续算令牌同样要收回：换模式卸载后它还会再跑一帧，去写已废弃画布的缓存 */
+      if (refine.current) cancelAnimationFrame(refine.current);
+      frame.current = 0;
+      settle.current = 0;
+      refine.current = 0;
+    },
+    [],
+  );
 
   /** 滚轮缩放需要 passive:false 才能 preventDefault */
   useEffect(() => {

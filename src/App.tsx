@@ -12,7 +12,9 @@ import {
   FunctionOutlined,
   GlobalOutlined,
   LineChartOutlined,
+  ClusterOutlined,
   SettingOutlined,
+  TableOutlined,
   ThunderboltOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
@@ -29,12 +31,14 @@ const MODES: { value: Mode; label: string; icon: React.ReactNode }[] = [
   { value: "geom", label: "动态几何", icon: <EnvironmentOutlined /> },
   { value: "complex", label: "复平面", icon: <GlobalOutlined /> },
   { value: "vector", label: "向量与场", icon: <LineChartOutlined /> },
+  { value: "lin", label: "矩阵与线性", icon: <TableOutlined /> },
+  { value: "nn", label: "神经网络", icon: <ClusterOutlined /> },
   { value: "surf", label: "三维曲面", icon: <ThunderboltOutlined /> },
   { value: "console", label: "控制台", icon: <SettingOutlined /> },
 ];
 
 const PRESET_GROUPS: { label: string; options: { value: string; label: string }[] }[] = (
-  ["func", "geom", "complex", "vector", "surf"] as Mode[]
+  ["func", "geom", "complex", "vector", "lin", "nn", "surf"] as Mode[]
 ).map((m) => ({
   label: MODES.find((q) => q.value === m)?.label ?? m,
   options: PRESETS.filter((p) => p.mode === m).map((p) => ({ value: p.key, label: `${p.title}｜${p.hint}` })),
@@ -148,7 +152,7 @@ export default function App() {
       locale={zhCN}
       theme={{
         algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
-        token: { colorPrimary: "#8b7cf6", borderRadius: 8, fontSize: 13 },
+        token: { colorPrimary: "#667eea", borderRadius: 8, fontSize: 13 },
       }}
     >
       <div className="gl-root" data-dark={dark}>
@@ -156,7 +160,7 @@ export default function App() {
           <div className="gl-logo">
             <span className="gl-logo-mark">∮</span>
             <span>
-              GeoLab 数学实验室
+              <span className="gl-logo-title">GeoLab 数学实验室</span>
               <div className="gl-logo-sub">几何画板 · 复平面 · 场与曲面</div>
             </span>
           </div>

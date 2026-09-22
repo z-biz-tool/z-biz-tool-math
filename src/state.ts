@@ -5,8 +5,9 @@ import { Viewport } from "./core/view.ts";
 import { paletteAt } from "./core/colormap.ts";
 import { Engine } from "./core/machine.ts";
 import { GeometryDoc } from "./core/geometry.ts";
+import type { Act, Dataset, DatasetName, Model } from "./core/nn.ts";
 
-export type Mode = "func" | "geom" | "complex" | "vector" | "surf" | "console";
+export type Mode = "func" | "geom" | "complex" | "vector" | "lin" | "nn" | "surf" | "console";
 
 export type LayerKind =
   | "cartesian"
@@ -101,6 +102,59 @@ export interface VectorState {
   colormap: string;
 }
 
+/** 线性代数工作台：矩阵 acts on the plane */
+export interface LinState {
+  dim: 2 | 3;
+  /** 行优先展开的 dim² 个表达式串，走引擎求值（可引用参数滑块 a/b） */
+  a: string[];
+  /** Ax=b 的 b，长度 dim */
+  b: string[];
+  /** 整数网格线的像 */
+  showGrid: boolean;
+  /** 单位圆 */
+  showCircle: boolean;
+  /** 单位圆的像（椭圆/退化线段） */
+  showEllipse: boolean;
+  /** 实特征向量与特征值标注 */
+  showEigen: boolean;
+  /** SVD 奇异向量与像椭圆主轴 */
+  showSVD: boolean;
+  /** 轨道点 p ↦ M·p */
+  showFlow: boolean;
+  /** 幂次 k 或 e^{tA} 的时间 t */
+  t: number;
+  /** true：连续流 e^{tA}；false：离散迭代 A^k */
+  useExp: boolean;
+}
+
+/** 神经网络工作台：小型 MLP 的决策边界与训练过程 */
+export interface NnState {
+  dataset: DatasetName;
+  samples: number;
+  /** 隐藏层宽度 */
+  hidden: number;
+  /** 隐藏层数（≥1） */
+  depth: number;
+  act: Act;
+  lr: number;
+  momentum: number;
+  batch: number;
+  seed: number;
+  /** 训练循环开关（面板里的 rAF 驱动） */
+  running: boolean;
+  showBoundary: boolean;
+  /** 决策边界栅格的水平采样数 */
+  boundaryRes: number;
+  epochs: number;
+  loss: number;
+  acc: number;
+  /** 最近若干轮的 loss，供面板画迷你曲线 */
+  curve: number[];
+  /** 可变对象：原地训练，不随 revision 重建 */
+  model: Model | null;
+  data: Dataset | null;
+}
+
 export type SurfKind = "graph" | "param" | "implicit" | "revolve" | "spacecurve";
 export type SurfStyle = "surf" | "mesh" | "wire" | "contour" | "surfc";
 
@@ -179,6 +233,8 @@ export interface GeoLabState {
   geo: GeoState;
   cplx: ComplexState;
   vec: VectorState;
+  lin: LinState;
+  nn: NnState;
   surf: SurfState;
   console: { lines: ConsoleLine[]; input: string };
   settings: Settings;
@@ -201,6 +257,8 @@ export interface GeoLabState {
   setGeo(p: Partial<GeoState>): void;
   setCplx(p: Partial<ComplexState>): void;
   setVec(p: Partial<VectorState>): void;
+  setLin(p: Partial<LinState>): void;
+  setNn(p: Partial<NnState>): void;
   setSurf(p: Partial<SurfState>): void;
 }
 
@@ -211,7 +269,16 @@ const defaultView = (mode: Mode): Viewport =>
   new Viewport({
     cx: 0,
     cy: 0,
-    scale: mode === "geom" ? 48 : mode === "complex" ? 70 : 60,
+    scale:
+      mode === "geom"
+        ? 48
+        : mode === "complex"
+          ? 70
+          : mode === "lin"
+            ? 88
+            : mode === "nn"
+              ? 112
+              : 60,
     width: 900,
     height: 640,
   });
@@ -280,6 +347,8 @@ export const useStore = create<GeoLabState>((set, get) => ({
     geom: defaultView("geom"),
     complex: defaultView("complex"),
     vector: defaultView("vector"),
+    lin: defaultView("lin"),
+    nn: defaultView("nn"),
     surf: defaultView("surf"),
     console: defaultView("console"),
   },
@@ -315,6 +384,39 @@ export const useStore = create<GeoLabState>((set, get) => ({
     streamlineCount: 16,
     steps: 600,
     colormap: "parula",
+  },
+  lin: {
+    dim: 2,
+    a: ["2", "1", "1", "-1"],
+    b: ["3", "1"],
+    showGrid: true,
+    showCircle: true,
+    showEllipse: true,
+    showEigen: true,
+    showSVD: false,
+    showFlow: true,
+    t: 1,
+    useExp: false,
+  },
+  nn: {
+    dataset: "moons",
+    samples: 160,
+    hidden: 8,
+    depth: 2,
+    act: "tanh",
+    lr: 0.08,
+    momentum: 0.9,
+    batch: 16,
+    seed: 5,
+    running: false,
+    showBoundary: true,
+    boundaryRes: 96,
+    epochs: 0,
+    loss: 0,
+    acc: 0,
+    curve: [],
+    model: null,
+    data: null,
   },
   surf: {
     layers: [
@@ -412,4 +514,6 @@ export const useStore = create<GeoLabState>((set, get) => ({
   setCplx: (p) => set((s) => ({ cplx: { ...s.cplx, ...p }, revision: s.revision + 1 })),
   setVec: (p) => set((s) => ({ vec: { ...s.vec, ...p }, revision: s.revision + 1 })),
   setSurf: (p) => set((s) => ({ surf: { ...s.surf, ...p }, revision: s.revision + 1 })),
+  setLin: (p) => set((s) => ({ lin: { ...s.lin, ...p }, revision: s.revision + 1 })),
+  setNn: (p) => set((s) => ({ nn: { ...s.nn, ...p }, revision: s.revision + 1 })),
 }));

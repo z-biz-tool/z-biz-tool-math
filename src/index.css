@@ -1,9 +1,13 @@
 :root {
-  --gl-accent: #8b7cf6;
+  /* 品牌色取自 z-biz-tool-shared/designTokens：#667eea → #764ba2 */
+  --gl-accent: #667eea;
   --gl-accent-2: #22d3ee;
+  --gl-brand: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  --gl-card-bg: linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%);
+  --gl-motion: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   --gl-bg: #0a0c1c;
   --gl-panel: rgba(19, 22, 44, 0.86);
-  --gl-line: rgba(139, 124, 246, 0.22);
+  --gl-line: rgba(102, 126, 234, 0.22);
   --gl-text: #e7e9ff;
   --gl-muted: #98a0c8;
 }
@@ -34,8 +38,8 @@ body {
   flex-direction: column;
   color: var(--gl-text);
   background:
-    radial-gradient(1100px 620px at 12% -8%, rgba(139, 124, 246, 0.16), transparent 60%),
-    radial-gradient(900px 560px at 96% 8%, rgba(34, 211, 238, 0.1), transparent 55%),
+    radial-gradient(1100px 620px at 12% -8%, rgba(102, 126, 234, 0.18), transparent 60%),
+    radial-gradient(900px 560px at 96% 8%, rgba(118, 75, 162, 0.14), transparent 55%),
     var(--gl-bg);
 }
 
@@ -110,8 +114,15 @@ body {
   place-items: center;
   font-size: 15px;
   color: #fff;
-  background: linear-gradient(135deg, var(--gl-accent), #ec4899);
-  box-shadow: 0 4px 18px rgba(139, 124, 246, 0.45);
+  background: var(--gl-brand);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.gl-logo-title {
+  background: var(--gl-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .gl-logo-sub {
@@ -203,7 +214,7 @@ body {
 
 .gl-sider {
   border-right: 1px solid var(--gl-line);
-  background: linear-gradient(180deg, rgba(139, 124, 246, 0.08), rgba(34, 211, 238, 0.04)) !important;
+  background: linear-gradient(180deg, rgba(102, 126, 234, 0.09), rgba(118, 75, 162, 0.05)) !important;
 }
 
 .gl-panel {
@@ -223,7 +234,7 @@ body {
 }
 
 .gl-panel::-webkit-scrollbar-thumb {
-  background: rgba(139, 124, 246, 0.35);
+  background: rgba(102, 126, 234, 0.35);
   border-radius: 6px;
 }
 
@@ -234,7 +245,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 9px;
-  background: var(--gl-panel);
+  /* 颜色只能作 background 的最后一层，渐变叠在底色上用 background-image */
+  background-color: var(--gl-panel);
+  background-image: var(--gl-card-bg);
+  transition: border-color var(--gl-motion), box-shadow var(--gl-motion);
+}
+
+.gl-card:hover {
+  border-color: rgba(102, 126, 234, 0.5);
+  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.15);
 }
 
 .gl-card-title {
@@ -279,12 +298,13 @@ body {
   display: flex;
   flex-direction: column;
   gap: 7px;
-  background: rgba(139, 124, 246, 0.05);
+  background: rgba(102, 126, 234, 0.05);
+  transition: border-color var(--gl-motion), background var(--gl-motion);
 }
 
 .gl-layer[data-active="true"] {
   border-color: var(--gl-accent);
-  background: rgba(139, 124, 246, 0.12);
+  background: rgba(102, 126, 234, 0.12);
 }
 
 .gl-tools {
@@ -306,18 +326,19 @@ body {
   justify-content: center;
   gap: 2px;
   font-size: 11px;
-  transition: all 0.15s ease;
+  transition: all var(--gl-motion);
 }
 
 .gl-tool:hover {
   border-color: var(--gl-accent);
-  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.15);
+  transform: translateY(-1px) scale(1.02);
 }
 
 .gl-tool[data-on="true"] {
   border-color: var(--gl-accent);
-  background: rgba(139, 124, 246, 0.2);
-  box-shadow: 0 0 0 1px rgba(139, 124, 246, 0.4) inset;
+  background: rgba(102, 126, 234, 0.2);
+  box-shadow: 0 2px 12px rgba(102, 126, 234, 0.2) inset;
 }
 
 /* ---------------------------------------------------------- 底部参数条 */
