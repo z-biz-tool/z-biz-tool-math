@@ -1,0 +1,45 @@
+name: CI
+
+# 门禁原来只能靠手动出包时才有：push 到 main 就跑这一条，不再用 tag 当唯一验证通道。
+# 只做 typecheck / 构建 / 内核自检，不产出发布物。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支新 push 取消旧 run：并行会话连续提交时，排队跑中间态只是烧 runner。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          # verify 是 `node scripts/verify.ts` 直接跑 TypeScript，本机即 24+，这里对齐。
+          node-version: 24
+
+      # 本仓没有 package-lock.json（见仓库根），npm ci 会直接报 "The `npm ci` command can only
+      # install with a lock file"。要用 ci 得先补一份锁文件并同批改 package.json，属于独立决定，
+      # 这里不夹带，所以退回 install —— 代价是 CI 绿的依赖树不唯一。
+      - name: Install dependencies
+        run: npm install --registry=https://registry.npmmirror.com
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Kernel self-check
+        run: npm run verify
