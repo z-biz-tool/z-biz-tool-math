@@ -406,6 +406,42 @@ export function newtonFractal(
   return { iter, root, roots };
 }
 
+/** 明度归一上界：Newton 收敛步数集中在个位数，按 maxIter 归一会失去层次 */
+const NEWTON_SHADE_REF = 16;
+
+/**
+ * 按「归属根 + 收敛步数」上一遍颜色。整幅与逐带、主线程与 worker 共用这一份，
+ * 否则同一份采样会画出两种明度的图。
+ */
+export function shadeNewton(
+  iter: Uint16Array,
+  root: Int16Array,
+  n: number,
+  cols: number[][],
+  dark: boolean,
+  out: Uint8ClampedArray,
+  off: number,
+): void {
+  const nr = Math.max(1, cols.length);
+  for (let i = 0; i < n; i++) {
+    const r = root[i];
+    const o = off + i * 3;
+    if (r < 0) {
+      out[o] = dark ? 10 : 240;
+      out[o + 1] = dark ? 12 : 242;
+      out[o + 2] = dark ? 26 : 250;
+      continue;
+    }
+    /* 收敛步数实测集中在 2~17，用 maxIter(64) 归一会把整幅压成同一亮度；
+       参考上界固定按快速收敛的量程取，且与降质档共用，避免停手回补时明度跳变 */
+    const t = 0.25 + 0.75 * Math.pow(1 - Math.min(1, iter[i] / NEWTON_SHADE_REF), 0.45);
+    const base = cols[r % nr];
+    out[o] = base[0] * t;
+    out[o + 1] = base[1] * t;
+    out[o + 2] = base[2] * t;
+  }
+}
+
 /**
  * 实二维映射 (x,y) → (u,v) 的中心差分雅可比。
  * singular: |det| 过小；conformal: CR 方程在尺度容差内成立（保角处可着色）。

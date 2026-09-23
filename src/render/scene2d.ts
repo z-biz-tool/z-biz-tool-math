@@ -3,13 +3,22 @@
  *
  * 约定：
  *  - 每帧现场编译表达式（一次 AST 遍历仅数微秒），因此参数滑块 a/b、控制台里
- *    新定义的用户函数都会立即生效，无需缓存失效逻辑；
+ *    新定义的用户函数都会立即生效；但跨帧续算的栅格结果一旦被缓存，
+ *    身份就必须把参数值一起算进去（见 globalsSig），否则滑块拖了图不变；
  *  - 栅格图（共形着色、不等式掩码、Newton 分形、决策边界）按屏幕行序采样：图像第 0 行必须
  *    对应世界 y 的上界，所以采样时传 (top → bottom)，blit 时传 (bottom, top)。
  */
 import { VK } from "../core/types.ts";
 import type { Val } from "../core/types.ts";
-import { Engine, compile, compileCplx, compileReal, evalString, suggestParams } from "../core/machine.ts";
+import {
+  Engine,
+  compile,
+  compileCplx,
+  compileReal,
+  evalString,
+  numericGlobals,
+  suggestParams,
+} from "../core/machine.ts";
 import { parseExpr } from "../core/parser.ts";
 import { signedRegionMask, traceContours, type Seg } from "../core/contour.ts";
 import {
@@ -21,17 +30,20 @@ import {
   streamlines,
 } from "../core/field.ts";
 import {
+  shadeNewton,
   criticalPoints,
   domainColor,
   mapCurve,
   newtonFractal,
   newtonPlan,
   type C,
+  type CFn,
   type NewtonPlan,
 } from "../core/cplane.ts";
 import { colormap, rgbCss } from "../core/colormap.ts";
 import { niceTicks } from "../core/view.ts";
 import type { Viewport } from "../core/view.ts";
+import { releaseRaster, takeRaster } from "./rasterPool.ts";
 import type { GeoLabState, Layer, NnState, ToolKind } from "../state.ts";
 import type { GeometryDoc } from "../core/geometry.ts";
 import {
@@ -159,7 +171,7 @@ function fn(eng: Engine, src: string, take: number, out: SceneOut, tag?: string)
 }
 
 /** 复变函数：以 z 为唯一自变量。传 out 时把失败原因写进去，省略则静默（悬停读数用） */
-function cfn(eng: Engine, src: string, out?: SceneOut, tag?: string): ((z: C) => C) | null {
+function cfn(eng: Engine, src: string, out?: SceneOut, tag?: string): CFn | null {
   let run: (s: Float64Array) => Val;
   let cf: ((re: number, im: number, o: C) => void) | null = null;
   try {
@@ -412,12 +424,11 @@ const DRAFT_STEP = 5;
 const DRAFT_NEWTON_STEP = 12;
 /** 交互中 Newton 分形只迭代到粗判收敛即止（没有可复用的上一次采样时的兜底） */
 const DRAFT_NEWTON_ITER = 14;
-/** 明度归一上界：Newton 收敛步数集中在个位数，按 maxIter 归一会失去层次 */
-const NEWTON_SHADE_REF = 16;
 
-/** 最近一次全质量 Newton 采样，供交互期间映射复用 */
-let newtonShot: {
-  src: string;
+/** 最近一次全质量采样的固化结果，交互期间按当前视口映射贴回（Newton 与共形着色共用） */
+let cplxShot: {
+  basis: string;
+  buf: Uint8ClampedArray;
   tile: HTMLCanvasElement;
   world: [number, number, number, number];
   roots: C[];
@@ -443,7 +454,29 @@ function rasterTile(rgb: Uint8ClampedArray, w: number, h: number): HTMLCanvasEle
   return cv;
 }
 
+/** 把这一帧的全质量栅格固化成交互期间的贴图源；同一块缓冲反复画不必重做 tile */
+function keepShot(
+  s: GeoLabState,
+  rgb: Uint8ClampedArray,
+  w: number,
+  h: number,
+  world: [number, number, number, number],
+  roots: C[],
+): void {
+  const basis = cplxBasis(s);
+  if (cplxShot && cplxShot.buf === rgb && cplxShot.basis === basis) return;
+  const tile = rasterTile(rgb, w, h);
+  cplxShot = tile ? { basis, buf: rgb, tile, world, roots } : null;
+}
+
 /* ------------------------------------ 栅格（共形着色 / 决策边界）的分带续算 */
+
+/** 采样身份里的参数指纹：同一表达式配不同参数值是两张图 */
+export function globalsSig(eng: Engine): string {
+  return numericGlobals(eng)
+    .map(([k, re, im]) => `${k}=${re},${im}`)
+    .join(",");
+}
 
 /** 一帧画不完、要跨帧逐行续算的栅格来自哪套采样器 */
 type RasterSource = "cplx" | "nn";
@@ -521,15 +554,38 @@ function rasterGeom(
  * 数值直接进字符串，浮点往返是精确的，所以相等即逐像素同解。
  */
 function rasterKey(s: GeoLabState, src: RasterSource, vp: Viewport, step: number, w: number, h: number): string {
-  const geo = [step, w, h, vp.left, vp.right, vp.bottom, vp.top, s.settings.dark ? 1 : 0];
+  const geom = [step, w, h, vp.left, vp.right, vp.bottom, vp.top];
   if (src === "nn") {
     const n = s.nn;
     /** model/data 都是原地训练的可变对象：身份里必须带 epochs 与结构，否则会把上一轮的边界当成这一帧 */
     const model = n.model ? `${n.model.act}:${n.model.sizes.join("x")}` : "-";
-    return ["nn", n.dataset, n.samples, n.seed, n.epochs, model, ...geo].join("\u0000");
+    return ["nn", n.dataset, n.samples, n.seed, n.epochs, model, ...geom, s.settings.dark ? 1 : 0].join("\u0000");
   }
+  return [cplxBasis(s), ...geom].join("\u0000");
+}
+
+/**
+ * 采样身份中与视口、栅格尺寸无关的一截：表达式、参数值、着色设置、明暗。
+ * 交互期间贴的是「上一次在别的视口算出的像素」，几何一动就得作废；
+ * 这些设置一动同样换一张图，所以它与 rasterKey 共用同一份定义，不各写一遍。
+ */
+function cplxBasis(s: GeoLabState): string {
   const c = s.cplx;
-  return ["cplx", c.f, c.mode, c.colormap, c.levelStep, c.iterative ? 1 : 0, ...geo].join("\u0000");
+  return [
+    "cplx",
+    c.f,
+    c.mode,
+    c.colormap,
+    c.levelStep,
+    c.iterative ? 1 : 0,
+    globalsSig(s.engine),
+    s.settings.dark ? 1 : 0,
+  ].join("\u0000");
+}
+
+/** 交互期间能不能沿用上一次全质量采样（Newton 与共形着色共用这份缓存） */
+function shotOf(s: GeoLabState): typeof cplxShot {
+  return cplxShot && cplxShot.basis === cplxBasis(s) ? cplxShot : null;
 }
 
 /** 本帧若按全质量画，采样身份是什么；无栅格可续算时返回 null */
@@ -583,39 +639,6 @@ export function rasterJobFor(s: GeoLabState, pw: number, ph: number): RasterJob 
 }
 
 /**
- * 按「归属根 + 收敛步数」上一遍颜色。整幅与逐带走同一个实现，
- * 否则分带续算的结果会和一次性采样差出肉眼可见的色阶。
- */
-function shadeNewton(
-  iter: Uint16Array,
-  root: Int16Array,
-  n: number,
-  cols: number[][],
-  dark: boolean,
-  out: Uint8ClampedArray,
-  off: number,
-): void {
-  const nr = Math.max(1, cols.length);
-  for (let i = 0; i < n; i++) {
-    const r = root[i];
-    const o = off + i * 3;
-    if (r < 0) {
-      out[o] = dark ? 10 : 240;
-      out[o + 1] = dark ? 12 : 242;
-      out[o + 2] = dark ? 26 : 250;
-      continue;
-    }
-    /* 收敛步数实测集中在 2~17，用 maxIter(64) 归一会把整幅压成同一亮度；
-       参考上界固定按快速收敛的量程取，且与降质档共用，避免停手回补时明度跳变 */
-    const t = 0.25 + 0.75 * Math.pow(1 - Math.min(1, iter[i] / NEWTON_SHADE_REF), 0.45);
-    const base = cols[r % nr];
-    out[o] = base[0] * t;
-    out[o + 1] = base[1] * t;
-    out[o + 2] = base[2] * t;
-  }
-}
-
-/**
  * 采样若干行，用完预算即返回 "more"。
  * 每行单独调用采样器：行内步长仍按整幅算，所以逐行结果与整幅一次采样逐字节相同。
  */
@@ -625,6 +648,8 @@ export function stepRasterJob(s: GeoLabState, job: RasterJob, budgetMs: number):
   const [left, right, bottom, top] = job.world;
   const dy = (bottom - top) / (job.h - 1);
   const t0 = performance.now();
+  // 本帧要画的是这张图才继续占池；换图了就放掉上一张还没派完的带
+  releaseRaster(job);
   if (job.source === "nn") {
     const m = s.nn.model;
     const cache = job.cache;
@@ -639,6 +664,26 @@ export function stepRasterJob(s: GeoLabState, job: RasterJob, budgetMs: number):
   const c = s.cplx;
   const f = cfn(s.engine, c.f);
   if (!f) return "stale";
+  /* 行与行互不依赖，编得出快路径的表达式就整带交给 worker 池：
+     主线程这一帧不必采样，等回带填进 job.rgb 即可；池塌了则从当前行起继续串行。 */
+  if (
+    f.cf &&
+    takeRaster(
+      {
+        src: c.f,
+        kind: job.mode === "newton" ? "newton" : "domain",
+        globals: numericGlobals(s.engine),
+        iter: NEWTON_FULL_ITER,
+        plan: job.plan,
+        levelStep: c.levelStep,
+        saturation: c.mode === "log" ? 0.95 : 0.85,
+        selfIter: c.mode === "log" || c.iterative,
+        dark,
+      },
+      job,
+    )
+  )
+    return job.rows >= job.h ? "done" : "more";
   while (job.rows < job.h) {
     const y = top + dy * job.rows;
     const off = job.rows * job.w * 3;
@@ -687,6 +732,16 @@ function drawComplexMode(
   const ready = readyJob(job, rasterKey(s, "cplx", vp, step, w, h)) ? job : null;
 
   if (c.mode === "domain" || c.mode === "log") {
+    const note = c.mode === "log" ? "迭代吸引盆 z←f(z)" : "Needham 共形着色：色相=arg f，明度=|f|";
+    /* 一帧要采十万像素，交互中不可能现算：把上一次全质量图按当前视口映射贴回，
+       位置仍精确，也比降采样那一版看得清 */
+    const shot = draft ? shotOf(s) : null;
+    if (shot) {
+      P.blitCanvas(p, shot.tile, shot.world, 1, s.settings.antialias);
+      P.drawFrame(p, { xPi: s.settings.piTicksX, yPi: s.settings.piTicksY, minor: false });
+      out.info.push(`${note}：交互中沿用上一次采样`);
+      return;
+    }
     const rgb = ready
       ? ready.rgb
       : domainColor(f, vp.left, vp.right, vp.top, vp.bottom, w, h, {
@@ -698,7 +753,8 @@ function drawComplexMode(
         });
     P.blitPixels(p, rgb, w, h, world, 1, s.settings.antialias);
     P.drawFrame(p, { xPi: s.settings.piTicksX, yPi: s.settings.piTicksY, minor: false });
-    out.info.push(c.mode === "log" ? "迭代吸引盆 z←f(z)" : "Needham 共形着色：色相=arg f，明度=|f|");
+    out.info.push(note);
+    if (!draft) keepShot(s, rgb, w, h, world, []);
     return;
   }
 
@@ -713,10 +769,10 @@ function drawComplexMode(
         }),
       );
     };
-    const shot = newtonShot && newtonShot.src === c.f ? newtonShot : null;
+    const shot = draft ? shotOf(s) : null;
     /* 每个像素要迭代到收敛并带回溯，降采样也压不进一帧；
        交互中直接把上一次全质量采样按当前视口映射贴回，几何位置仍然正确 */
-    if (draft && shot) {
+    if (shot) {
       P.blitCanvas(p, shot.tile, shot.world, 1, s.settings.antialias);
       P.drawFrame(p, { xPi: s.settings.piTicksX, yPi: s.settings.piTicksY, minor: false });
       showRoots(shot.roots, Math.max(1, shot.roots.length));
@@ -741,10 +797,7 @@ function drawComplexMode(
     P.blitPixels(p, rgb, w, h, world, 1, s.settings.antialias);
     P.drawFrame(p, { xPi: s.settings.piTicksX, yPi: s.settings.piTicksY, minor: false });
     showRoots(roots, Math.max(1, roots.length));
-    if (!draft) {
-      const tile = rasterTile(rgb, w, h);
-      newtonShot = tile ? { src: c.f, tile, world, roots } : null;
-    }
+    if (!draft) keepShot(s, rgb, w, h, world, roots);
     out.info.push(`Newton 法 z←z−f/f'：自动发现 ${roots.length} 个根`);
     return;
   }

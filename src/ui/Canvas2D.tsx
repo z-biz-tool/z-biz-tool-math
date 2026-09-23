@@ -204,8 +204,12 @@ export default function Canvas2D() {
      等到真正开画时任何时间窗都已经过期，就再也进不去降质了。 */
   const step = useCallback(() => {
     frame.current = 0;
-    const draft = pendingDraft.current;
+    const draft0 = pendingDraft.current;
     pendingDraft.current = false;
+    /* 栅格一帧采不完，所以「整幅现算」这种帧根本不该出现：改一个表达式、打开工作台的首帧，
+       都会在主线程里算掉几百毫秒到几秒（分辨率 1 时五秒）。只要有栅格可续算，就先画降质档，
+       停手再交给分带回补——拖动路径本来就是这么走的，这里补上非交互的那一半。 */
+    const draft = draft0 || rasterKeyOf(useStore.getState(), size.current.w, size.current.h) !== null;
     const t0 = performance.now();
     draw(draft);
     lastCost.current = performance.now() - t0;

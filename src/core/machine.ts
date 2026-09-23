@@ -22,6 +22,19 @@ const PI = Math.PI;
 export function num(re: number, im = 0): Val {
   return { k: VK.Num, re, im, b: false, v: null, m: null, fn: null, s: null };
 }
+/**
+ * 引擎里的数值全局量（参数滑块、控制台 let），按名字排序。
+ * 复平面栅格的采样结果由它决定，缓存身份与 worker 侧编译都要带同一份。
+ */
+export function numericGlobals(eng: Engine): [string, number, number][] {
+  const list: [string, number, number][] = [];
+  eng.globals.forEach((v, k) => {
+    if (v.k === VK.Num) list.push([k, v.re, v.im]);
+  });
+  list.sort((a, b) => (a[0] === b[0] ? 0 : a[0] < b[0] ? -1 : 1));
+  return list;
+}
+
 export function bool(b: boolean): Val {
   return { k: VK.Bool, re: b ? 1 : 0, im: 0, b, v: null, m: null, fn: null, s: null };
 }

@@ -13,7 +13,7 @@ import { buildParametricGrid, projectScene, orbitCamera, surfaceNormals, normalA
 import { colormap, COLORMAPS } from "../src/core/colormap.ts";
 import { logTicks, niceTicks, Viewport } from "../src/core/view.ts";
 import { GeometryDoc } from "../src/core/geometry.ts";
-import { F1, rasterJobFor, rasterKeyOf, stepRasterJob } from "../src/render/scene2d.ts";
+import { F1, globalsSig, rasterJobFor, rasterKeyOf, stepRasterJob } from "../src/render/scene2d.ts";
 import { useStore, type Mode } from "../src/state.ts";
 import { parseMatrix, parseVector } from "../src/core/parsemat.ts";
 import { PRESETS, applyPreset } from "../src/presets.ts";
@@ -522,6 +522,61 @@ ok("实数快路径静态判定", isRealStatic(parseExpr("x^2+sin(x)"), ["x"], e
     s.setView("complex", vp.panPixels(9, 0));
     ok("视口一挪，续算任务即过期", stepRasterJob(useStore.getState(), job, 1) === "stale");
     ok("视口一挪，采样身份即改变", rasterKeyOf(useStore.getState(), vp.width, vp.height) !== key);
+  }
+  /* 参数滑块写的是 engine.globals：表达式一个字没改，图却整幅换了，身份必须跟住它 */
+  {
+    const cur = useStore.getState();
+    const vw = cur.views.complex.width;
+    const vh = cur.views.complex.height;
+    cur.setCplx({ mode: "newton", f: "z^2+a" });
+    cur.engine.setNum("a", 1);
+    const run = (j: NonNullable<ReturnType<typeof rasterJobFor>>) => {
+      let g = 0;
+      while (stepRasterJob(useStore.getState(), j, 1e9) === "more" && g++ < 100000) {
+        /* 逐带推进 */
+      }
+      return j;
+    };
+    const jA = rasterJobFor(useStore.getState(), vw, vh);
+    ok("带参数的采样任务可建立", !!jA);
+    if (jA) {
+      const kA = jA.key;
+      const before = run(jA).rgb.slice();
+      useStore.getState().engine.setNum("a", -3);
+      const jB = rasterJobFor(useStore.getState(), vw, vh);
+      ok("滑块一动，采样身份即过期", !!jB && jB.key !== kA);
+      ok("滑块一动，在途任务当场作废", stepRasterJob(useStore.getState(), jA, 1) === "stale");
+      if (jB) {
+        let diff = 0;
+        const after = run(jB).rgb;
+        for (let i = 0; i < before.length; i++) if (before[i] !== after[i]) diff++;
+        ok("同一表达式换参数真的换图", diff * 4 > before.length, `差 ${diff}/${before.length} 字节`);
+      }
+      // 身份只取决于「哪些参数取什么值」，与写入顺序无关：Map 的遍历序不许渗进 key
+      useStore.getState().engine.remove("a");
+      useStore.getState().engine.setNum("b", 2);
+      useStore.getState().engine.setNum("a", 1);
+      const jSwap = rasterJobFor(useStore.getState(), vw, vh);
+      const sigAB = globalsSig(useStore.getState().engine);
+      useStore.getState().engine.remove("a");
+      useStore.getState().engine.remove("b");
+      useStore.getState().engine.setNum("a", 1);
+      useStore.getState().engine.setNum("b", 2);
+      ok("参数指纹与写入顺序无关", sigAB === globalsSig(useStore.getState().engine));
+      ok("换个写入顺序还是同一张图的身份", !!jSwap && jSwap.key === rasterJobFor(useStore.getState(), vw, vh)?.key);
+      useStore.getState().engine.remove("b");
+      useStore.getState().engine.remove("a");
+      ok(
+        "参数清掉后表达式无定义，栅格任务不成立",
+        rasterJobFor(useStore.getState(), vw, vh) === null,
+      );
+      useStore.getState().engine.setNum("a", 1);
+      const jC = rasterJobFor(useStore.getState(), vw, vh);
+      ok("回到同一组参数值即回到同一身份", !!jC && jC.key === kA);
+    }
+    const rst = useStore.getState();
+    rst.setCplx({ mode: "domain", f: "z^3-1" });
+    rst.setCplx({ mode: "map" });
   }
   const back = useStore.getState();
   back.setCplx({ mode: "map" });
