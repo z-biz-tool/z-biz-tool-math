@@ -28,12 +28,12 @@ jobs:
         with:
           # verify 是 `node scripts/verify.ts` 直接跑 TypeScript，本机即 24+，这里对齐。
           node-version: 24
+          # 锁文件已入库（Tauri 壳那批一并提交），npm 缓存可用。
+          cache: npm
 
-      # 本仓没有 package-lock.json（见仓库根），npm ci 会直接报 "The `npm ci` command can only
-      # install with a lock file"。要用 ci 得先补一份锁文件并同批改 package.json，属于独立决定，
-      # 这里不夹带，所以退回 install —— 代价是 CI 绿的依赖树不唯一。
+      # npm ci 而非 install：install 允许与 package-lock.json 漂移，那样"CI 绿"不对应任何一份确定的依赖树。
       - name: Install dependencies
-        run: npm install --registry=https://registry.npmmirror.com
+        run: npm ci --registry=https://registry.npmmirror.com
 
       - name: Typecheck
         run: npm run typecheck
