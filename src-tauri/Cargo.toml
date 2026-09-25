@@ -3,6 +3,7 @@ name = "z-biz-tool-math"
 version = "0.1.0"
 description = "GeoLab 数学实验室：几何画板式动态几何 + 函数/复平面/向量/曲面/矩阵/神经网络可视化工作台"
 edition = "2021"
+license = "MIT"
 
 [lib]
 name = "z_biz_tool_math_lib"
