@@ -333,6 +333,15 @@ const initialLayers: Layer[] = [
   },
 ];
 
+/** 与全家共用同一个键和取值（五仓 vendored ThemeContext 写的就是 z-tool-theme → "dark"|"light"） */
+const THEME_KEY = "z-tool-theme";
+
+/** 没存过就保持本仓深色优先的默认；verify 在无 window 的 Node 里 import 本模块，那条路也只走这里 */
+function readStoredDark(): boolean {
+  if (typeof window === "undefined") return true;
+  return localStorage.getItem(THEME_KEY) !== "light";
+}
+
 export const useStore = create<GeoLabState>((set, get) => ({
   mode: "func",
   layers: initialLayers,
@@ -443,7 +452,7 @@ export const useStore = create<GeoLabState>((set, get) => ({
   },
   console: { lines: [], input: "" },
   settings: {
-    dark: true,
+    dark: readStoredDark(),
     showMinorGrid: true,
     piTicksX: false,
     piTicksY: false,
@@ -517,3 +526,9 @@ export const useStore = create<GeoLabState>((set, get) => ({
   setLin: (p) => set((s) => ({ lin: { ...s.lin, ...p }, revision: s.revision + 1 })),
   setNn: (p) => set((s) => ({ nn: { ...s.nn, ...p }, revision: s.revision + 1 })),
 }));
+
+/* 主题落盘挂在订阅上：设置面板的开关和「载入工程」是两条独立写路径，只堵一条会漏 */
+useStore.subscribe((s, p) => {
+  if (typeof window === "undefined" || s.settings.dark === p.settings.dark) return;
+  localStorage.setItem(THEME_KEY, s.settings.dark ? "dark" : "light");
+});
