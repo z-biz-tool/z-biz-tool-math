@@ -342,8 +342,73 @@ function readStoredDark(): boolean {
   return localStorage.getItem(THEME_KEY) !== "light";
 }
 
+/* dark 不落这里：五仓共用 z-tool-theme，别的仓库改了主题本仓下次打开也该跟着变 */
+const UI_PREFS_KEY = "z-biz-tool-math-ui-prefs";
+const UI_PREFS_VERSION = 1;
+
+const MODE_LIST: Mode[] = ["func", "geom", "complex", "vector", "lin", "nn", "surf", "console"];
+
+function defaultSettings(): Settings {
+  return {
+    dark: readStoredDark(),
+    showMinorGrid: true,
+    piTicksX: false,
+    piTicksY: false,
+    showCrosshair: true,
+    antialias: true,
+  };
+}
+
+const boolOf = (v: unknown, dflt: boolean): boolean => (typeof v === "boolean" ? v : dflt);
+
+/**
+ * 磁盘上的负载可能是缺字段的旧版、被写坏的值、或干脆不是 JSON：
+ * 逐项校验并回落默认值，认不出的字段留着不管。纯函数，verify 直接喂脏数据。
+ */
+export function parseUiPrefs(text: string | null): { mode: Mode; settings: Settings } {
+  const dflt = defaultSettings();
+  const out = { mode: "func" as Mode, settings: dflt };
+  if (!text) return out;
+  let d: unknown;
+  try {
+    d = JSON.parse(text);
+  } catch {
+    return out;
+  }
+  if (!d || typeof d !== "object") return out;
+  const r = d as Record<string, unknown>;
+  if (typeof r.mode === "string" && MODE_LIST.includes(r.mode as Mode)) out.mode = r.mode as Mode;
+  /** version 缺失按最初的样子读；对不上也照读能认的字段，别把用户的手动开关一刷子抹掉 */
+  if (r.version !== undefined && typeof r.version !== "number") return out;
+  return {
+    mode: out.mode,
+    settings: {
+      ...dflt,
+      showMinorGrid: boolOf(r.showMinorGrid, dflt.showMinorGrid),
+      piTicksX: boolOf(r.piTicksX, dflt.piTicksX),
+      piTicksY: boolOf(r.piTicksY, dflt.piTicksY),
+      showCrosshair: boolOf(r.showCrosshair, dflt.showCrosshair),
+      antialias: boolOf(r.antialias, dflt.antialias),
+    },
+  };
+}
+
+function readUiPrefs(): { mode: Mode; settings: Settings } {
+  if (typeof window === "undefined") return parseUiPrefs(null);
+  let text: string | null = null;
+  try {
+    text = localStorage.getItem(UI_PREFS_KEY);
+  } catch {
+    text = null;
+  }
+  return parseUiPrefs(text);
+}
+
+const baseSettings = defaultSettings();
+const uiPrefs = readUiPrefs();
+
 export const useStore = create<GeoLabState>((set, get) => ({
-  mode: "func",
+  mode: uiPrefs.mode,
   layers: initialLayers,
   activeLayer: initialLayers[0].id,
   params: [
@@ -451,14 +516,7 @@ export const useStore = create<GeoLabState>((set, get) => ({
     lightAngle: 0.6,
   },
   console: { lines: [], input: "" },
-  settings: {
-    dark: readStoredDark(),
-    showMinorGrid: true,
-    piTicksX: false,
-    piTicksY: false,
-    showCrosshair: true,
-    antialias: true,
-  },
+  settings: { ...uiPrefs.settings, dark: baseSettings.dark },
   revision: 0,
 
   setMode: (m) => set({ mode: m }),
@@ -531,4 +589,30 @@ export const useStore = create<GeoLabState>((set, get) => ({
 useStore.subscribe((s, p) => {
   if (typeof window === "undefined" || s.settings.dark === p.settings.dark) return;
   localStorage.setItem(THEME_KEY, s.settings.dark ? "dark" : "light");
+});
+
+/* 模式与显示开关同理：切一次模式就写一次 localStorage 太密，参数动画一帧一改更甚 */
+let prefsTimer = 0;
+useStore.subscribe((s, p) => {
+  if (typeof window === "undefined" || (s.mode === p.mode && s.settings === p.settings)) return;
+  clearTimeout(prefsTimer);
+  const { mode, settings } = s;
+  prefsTimer = window.setTimeout(() => {
+    try {
+      localStorage.setItem(
+        UI_PREFS_KEY,
+        JSON.stringify({
+          version: UI_PREFS_VERSION,
+          mode,
+          showMinorGrid: settings.showMinorGrid,
+          piTicksX: settings.piTicksX,
+          piTicksY: settings.piTicksY,
+          showCrosshair: settings.showCrosshair,
+          antialias: settings.antialias,
+        }),
+      );
+    } catch {
+      /* 隐私模式或配额满：记不住下次打开的位置，但不能影响当下的工作台 */
+    }
+  }, 250);
 });

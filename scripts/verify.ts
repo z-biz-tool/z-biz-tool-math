@@ -14,7 +14,7 @@ import { colormap, COLORMAPS } from "../src/core/colormap.ts";
 import { logTicks, niceTicks, Viewport } from "../src/core/view.ts";
 import { GeometryDoc } from "../src/core/geometry.ts";
 import { F1, globalsSig, rasterJobFor, rasterKeyOf, stepRasterJob } from "../src/render/scene2d.ts";
-import { useStore, type Mode } from "../src/state.ts";
+import { parseUiPrefs, useStore, type Mode } from "../src/state.ts";
 import { parseMatrix, parseVector } from "../src/core/parsemat.ts";
 import { PRESETS, applyPreset } from "../src/presets.ts";
 import {
@@ -1608,6 +1608,54 @@ ok("实数快路径静态判定", isRealStatic(parseExpr("x^2+sin(x)"), ["x"], e
   );
   ok("SidePanel 分支齐全", missingPanel.length === 0, `缺 ${missingPanel.join(",")}`);
   for (const m of ["lin", "nn"]) ok(`${m} 出现在模式切换栏`, app.includes(`"${m}"`), "App 模式列表缺少");
+}
+
+
+/* ==================== UI 状态落盘：脏负载绝不能崩在启动路径上 */
+{
+  const st = parseUiPrefs(null);
+  ok("无存档：回到 func 模式", st.mode === "func", st.mode);
+  ok("无存档：默认开次级网格", st.settings.showMinorGrid === true);
+  ok("无存档：默认关 π 刻度", st.settings.piTicksX === false && st.settings.piTicksY === false);
+  ok("坏 JSON：回落默认而不是抛错", parseUiPrefs("{ 这不是 json").mode === "func");
+  ok("JSON 标量：回落默认", parseUiPrefs("42").mode === "func");
+  ok("JSON 数组：回落默认", parseUiPrefs("[1,2,3]").mode === "func");
+  ok("陌生模式名：回落 func", parseUiPrefs('{"version":1,"mode":"wizard"}').mode === "func");
+  const v2 = parseUiPrefs('{"version":1,"mode":"surf","antialias":false,"piTicksX":true}');
+  ok("v1 存档：记住曲面模式", v2.mode === "surf", v2.mode);
+  ok("v1 存档：记住关掉的平滑", v2.settings.antialias === false);
+  ok("v1 存档：没提到的开关保持默认", v2.settings.showCrosshair === true);
+  /* 缺 version 段是早期写入的样子：能认的字段照读，不整份作废 */
+  const legacy = parseUiPrefs('{"mode":"nn","showMinorGrid":false}');
+  ok("缺 version：仍读得出模式", legacy.mode === "nn", legacy.mode);
+  ok("缺 version：仍读得出网格开关", legacy.settings.showMinorGrid === false);
+  ok("字段被写成字符串：回落默认", parseUiPrefs('{"version":1,"antialias":"yes"}').settings.antialias === true);
+  ok("version 写成字符串：模式仍可读", parseUiPrefs('{"version":"1","mode":"geom"}').mode === "geom");
+  ok("模式非字符串：回落 func", parseUiPrefs('{"version":1,"mode":7}').mode === "func");
+  /* 键名是本仓的命名空间，不能跟五仓共用的 z-tool-theme 撞 */
+  const stateSrc = readFileSync(new URL("../src/state.ts", import.meta.url), "utf8");
+  ok("UI 存档用本仓独立键", stateSrc.includes('"z-biz-tool-math-ui-prefs"'), "缺独立键名");
+  ok("主题仍走五仓共用键", stateSrc.includes('"z-tool-theme"'), "共用键被改掉了");
+  ok("UI 存档带版本标记", stateSrc.includes("UI_PREFS_VERSION"), "写入未带 version");
+}
+
+/* ==================== 外壳接线：快捷键、会话留存、危险动作确认 */
+{
+  const read = (f: string) => readFileSync(new URL(f, import.meta.url), "utf8");
+  const app = read("../src/App.tsx");
+  const main = read("../src/main.tsx");
+  ok("八种模式各有数字快捷键", app.includes('"12345678"'), "未见 ⌘1…⌘8 的分派");
+  ok("⌘S 绑到保存工程", /k === "s"[\s\S]{0,80}saveProject\(\)/.test(app), "⌘S 未接 saveProject");
+  ok("⌘E 绑到导出 PNG", /k === "e"[\s\S]{0,60}doExportPng\(\)/.test(app), "⌘E 未接导出");
+  /** 撤销栈只在几何模式：函数模式下按 ⌘Z 悄悄改几何图，用户会找不到东西去哪了 */
+  ok("撤销仅在几何模式生效", /k === "z"[\s\S]{0,160}st\.mode !== "geom"/.test(app), "⌘Z 未按模式设限");
+  ok("输入框内不抢 ⌘Z", /k === "z"[\s\S]{0,80}inField\ \|\|/.test(app), "字段里的文本撤销被截走");
+  ok("打开工程前先确认覆盖", app.includes("覆盖当前工作台？"), "载入工程仍是单击即替换");
+  ok("会话快照用本仓独立键", app.includes('"z-biz-tool-math-session"'), "缺会话留存键");
+  ok("会话写盘有防抖", /clearTimeout\(timer\)[\s\S]{0,80}window\.setTimeout[\s\S]{0,160}setItem\(SESSION_KEY/.test(app), "每帧序列化会卡住拖动");
+  ok("会话回位失败时清掉坏档", /removeItem\(SESSION_KEY\)/.test(app), "坏档会每次启动都撞一遍");
+  ok("根节点有错误边界", main.includes("componentDidCatch") && main.includes("<Boundary>"), "渲染抛错会白屏");
+  ok("工程序列化仍是同一个格式", app.includes("serializeProject()"), "会话没复用工程格式");
 }
 
 console.log(`\n验证结束：通过 ${pass} 项${fails.length ? `，失败 ${fails.length} 项：` : "，全部通过"}`);

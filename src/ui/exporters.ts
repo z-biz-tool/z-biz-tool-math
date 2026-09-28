@@ -128,8 +128,12 @@ function loadGeo(raw: string | undefined, s: GeoLabState): GeometryDoc {
   }
 }
 
-/** 载入工程；文件不合结构时抛中文错误，供界面提示 */
-export function applyProject(text: string): void {
+/**
+ * 载入工程；文件不合结构时抛中文错误，供界面提示。
+ * keepDark：自动回位会话时用——深浅色是几个工具共用的 z-tool-theme，
+ * 拿一份旧快照去覆盖它会把别的仓库刚改的主题顺手改回去。手动「打开工程」不享这个豁免。
+ */
+export function applyProject(text: string, opts?: { keepDark?: boolean }): void {
   let data: Project;
   try {
     data = JSON.parse(text) as Project;
@@ -160,7 +164,9 @@ export function applyProject(text: string): void {
       ? { ...s.nn, ...data.nn, model: null, data: null, running: false, epochs: 0, loss: 0, acc: 0, curve: [] }
       : s.nn,
     surf: { ...s.surf, ...data.surf },
-    settings: { ...s.settings, ...data.settings },
+    settings: opts?.keepDark
+      ? { ...s.settings, ...data.settings, dark: s.settings.dark }
+      : { ...s.settings, ...data.settings },
     views,
   });
   s.setGeo({
