@@ -11,6 +11,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "verify": "node scripts/verify.ts",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
