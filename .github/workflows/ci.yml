@@ -33,7 +33,7 @@ jobs:
 
       # npm ci 而非 install：install 允许与 package-lock.json 漂移，那样"CI 绿"不对应任何一份确定的依赖树。
       - name: Install dependencies
-        run: npm ci --registry=https://registry.npmmirror.com
+        run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
