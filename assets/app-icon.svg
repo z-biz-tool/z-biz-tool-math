@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2E7CF6"/>
+      <stop offset="1" stop-color="#6C5CE7"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#7FF9E8" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#7FF9E8" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="72" y="72" width="880" height="880" rx="232" fill="url(#bg)"/>
+
+  <!-- 机身 -->
+  <rect x="272" y="236" width="480" height="552" rx="88" fill="#FFFFFF"/>
+
+  <!-- 屏幕 -->
+  <rect x="320" y="284" width="384" height="140" rx="40" fill="#122A33"/>
+  <circle cx="640" cy="354" r="90" fill="url(#glow)"/>
+  <rect x="352" y="338" width="156" height="32" rx="16" fill="#34E8D2"/>
+  <rect x="524" y="338" width="64" height="32" rx="16" fill="#7FF9E8" fill-opacity="0.7"/>
+
+  <!-- 键盘区 -->
+  <g fill="#122A33" fill-opacity="0.16">
+    <rect x="346" y="472" width="84" height="84" rx="26"/>
+    <rect x="470" y="472" width="84" height="84" rx="26"/>
+    <rect x="346" y="590" width="84" height="84" rx="26"/>
+    <rect x="470" y="590" width="84" height="84" rx="26"/>
+    <rect x="346" y="672" width="208" height="72" rx="26"/>
+  </g>
+  <rect x="594" y="472" width="84" height="84" rx="26" fill="#34E8D2"/>
+  <rect x="594" y="590" width="84" height="84" rx="26" fill="#34E8D2"/>
+  <rect x="594" y="672" width="84" height="72" rx="26" fill="#FF6B6B"/>
+</svg>
