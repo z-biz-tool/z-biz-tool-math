@@ -55,12 +55,12 @@ function near(actual: number, expect: number, tol = 1e-9, msg?: string): void {
     `${msg ?? "值不相等"}：实际 ${actual}，期望 ${expect}（容差 ${tol}）`,
   );
 }
-function nearMat(actual: number[][], expect: number[][], tol = 1e-9): void {
+function nearMat(actual: number[][], expect: number[][], tol = 1e-9, msg?: string): void {
   assert.equal(actual.length, expect.length, "行数不符");
   for (let i = 0; i < expect.length; i++) {
     assert.equal(actual[i].length, expect[i].length, `第 ${i} 行列数不符`);
     for (let j = 0; j < expect[i].length; j++) {
-      near(actual[i][j], expect[i][j], tol, `M[${i}][${j}]`);
+      near(actual[i][j], expect[i][j], tol, msg ? `${msg} M[${i}][${j}]` : `M[${i}][${j}]`);
     }
   }
 }
@@ -68,13 +68,19 @@ function nearMat(actual: number[][], expect: number[][], tol = 1e-9): void {
 const ev = (src: string): number => asReal(evalString(new Engine(), src));
 /** 求值成显示文本，用于格式化断言 */
 const evs = (src: string): string => show(evalString(new Engine(), src));
-/** 断言表达式求值抛错，且错误信息里带上原文 */
-function evThrows(src: string, needle: string): RegExp {
+/**
+ * 断言表达式求值抛错，且错误信息里带上原文。
+ *
+ * `needle` 是**正则**（调用点一律传 `/未定义的名称/` 这种字面量），
+ * 签名原先写成 `string`，逼出了一处 `as unknown as RegExp` 的类型强转 ——
+ * 那是把「类型对不上」藏起来的写法，tsc 一旦把本文件纳入检查就会报出来。
+ */
+function evThrows(src: string, needle: RegExp): RegExp {
   try {
     evalString(new Engine(), src);
   } catch (e) {
     assert.match((e as Error).message, needle, "错误信息应说明原因");
-    return needle as unknown as RegExp;
+    return needle;
   }
   assert.fail(`"${src}" 本应抛错却求出了值`);
 }
@@ -408,7 +414,10 @@ test("定义与绑定：k = 7 写入 globals，numericGlobals 按名字排序", 
   // Engine.define 会注册函数；evalString 不会（实测记录）
   const e2 = new Engine();
   e2.define("g(x) = x^2 + 1");
-  assert.equal(asReal(evalString(e2, "g(3)")), 10, 1e-12, "define 之后可以调用");
+  // ⚠️ 这里原先写的是 assert.equal(actual, expected, 1e-12, msg) ——
+  // assert.equal 只有 (actual, expected, message) 三个参数，1e-12 落到了「消息」位，
+  // 真正的 msg 被丢掉，而且比较是**严格相等**（没有容差）。改用 near。
+  near(asReal(evalString(e2, "g(3)")), 10, 1e-12, "define 之后可以调用");
   const e3 = new Engine();
   evalString(e3, "g(x) = x^2 + 1");
   assert.throws(

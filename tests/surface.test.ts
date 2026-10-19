@@ -34,8 +34,10 @@ function near(actual: number, expect: number, tol = 1e-6, msg?: string): void {
     `${msg ?? "值不相等"}：实际 ${actual}，期望 ${expect}（容差 ${tol}）`,
   );
 }
-function nearVec(actual: ArrayLike<number>, expect: number[], tol = 1e-6): void {
-  for (let i = 0; i < expect.length; i++) near(actual[i], expect[i], tol, `分量 ${i}`);
+function nearVec(actual: ArrayLike<number>, expect: ArrayLike<number>, tol = 1e-6, msg?: string): void {
+  for (let i = 0; i < expect.length; i++) {
+    near(actual[i], expect[i], tol, msg ? `${msg} 分量 ${i}` : `分量 ${i}`);
+  }
 }
 const vtx = (m: Mesh, i: number): [number, number, number] => [
   m.positions[i * 3],

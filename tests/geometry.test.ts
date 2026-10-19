@@ -20,15 +20,15 @@ function near(actual: number, expect: number, tol = 1e-9, msg?: string): void {
     `${msg ?? "值不相等"}：实际 ${actual}，期望 ${expect}（容差 ${tol}）`,
   );
 }
-function nearPt(actual: [number, number], expect: [number, number], tol = 1e-9): void {
-  near(actual[0], expect[0], tol, "x");
-  near(actual[1], expect[1], tol, "y");
+function nearPt(actual: [number, number], expect: [number, number], tol = 1e-9, msg?: string): void {
+  near(actual[0], expect[0], tol, msg ? `${msg} x` : "x");
+  near(actual[1], expect[1], tol, msg ? `${msg} y` : "y");
 }
 /** 方向向量容差比较：必须用这个而不是 deepEqual——perpOf 会算出 -0，deepEqual 判 -0 ≠ 0 */
-function nearVec(actual: [number, number] | undefined, expect: [number, number], tol = 1e-12): void {
+function nearVec(actual: [number, number] | undefined, expect: [number, number], tol = 1e-12, msg?: string): void {
   assert.ok(actual, "方向向量为 undefined");
-  near(actual![0], expect[0], tol, "dx");
-  near(actual![1], expect[1], tol, "dy");
+  near(actual![0], expect[0], tol, msg ? `${msg} dx` : "dx");
+  near(actual![1], expect[1], tol, msg ? `${msg} dy` : "dy");
 }
 /** 取点的位置；构造出错时给出可读信息 */
 function at(d: GeometryDoc, id: string): [number, number] {
