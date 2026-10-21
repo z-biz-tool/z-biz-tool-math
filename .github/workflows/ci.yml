@@ -35,6 +35,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Rust 侧静态门（**只挂 fmt**）：本仓的 Rust 代码只有 12 行 Tauri 模板
+      # （src-tauri/src/lib.rs + main.rs），零逻辑零测试；真正的产品逻辑全在 TypeScript 那边，
+      # 上面的 typecheck / npm test / build / verify 已经管着。
+      # 所以这里只挂最便宜的那条 —— `cargo fmt` **不编译** crate，不需要 GTK/WebKit，
+      # 也不需要前端 dist（不像 `cargo test`/`clippy` 要展开 `tauri::generate_context!()`）。
+      # clippy 要真编译整个 crate（Linux 上还得先 apt 装 GTK/WebKit），为 12 行模板不值那个 runner 时间；
+      # Rust 侧的编译级保证也没丢：打 tag 时 build.yml 会在四个平台上真编一次 Tauri 包。
+      - name: Setup Rust (rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format
+        run: cargo fmt --all --check --manifest-path src-tauri/Cargo.toml
+
       - name: Typecheck
         run: npm run typecheck
 
