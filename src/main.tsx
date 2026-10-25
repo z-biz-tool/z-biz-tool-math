@@ -1,6 +1,7 @@
 import { Component, StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import UpdaterGate from "./components/UpdaterDialog";
 import "./index.css";
 
 /**
@@ -35,6 +36,7 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <Boundary>
       <App />
+      <UpdaterGate />
     </Boundary>
   </StrictMode>,
 );

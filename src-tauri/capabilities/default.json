@@ -3,5 +3,8 @@
   "identifier": "default",
   "description": "默认窗口能力：纯前端教学应用，只要核心默认权限",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default",
+    "updater:default",
+    "process:default"
+  ]
 }
