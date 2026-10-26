@@ -339,7 +339,12 @@ const THEME_KEY = "z-tool-theme";
 /** 没存过就保持本仓深色优先的默认；verify 在无 window 的 Node 里 import 本模块，那条路也只走这里 */
 function readStoredDark(): boolean {
   if (typeof window === "undefined") return true;
-  return localStorage.getItem(THEME_KEY) !== "light";
+  try {
+    return localStorage.getItem(THEME_KEY) !== "light";
+  } catch (e) {
+    console.warn("[state] 读不到主题偏好，按深色启动:", e);
+    return true;
+  }
 }
 
 /* dark 不落这里：五仓共用 z-tool-theme，别的仓库改了主题本仓下次打开也该跟着变 */
@@ -398,7 +403,8 @@ function readUiPrefs(): { mode: Mode; settings: Settings } {
   let text: string | null = null;
   try {
     text = localStorage.getItem(UI_PREFS_KEY);
-  } catch {
+  } catch (e) {
+    console.warn("[state] 读不到界面偏好，使用默认布局:", e);
     text = null;
   }
   return parseUiPrefs(text);
@@ -571,8 +577,11 @@ export const useStore = create<GeoLabState>((set, get) => ({
   },
   addParam: (p) =>
     set((s) => ({ params: [...s.params.filter((q) => q.name !== p.name), p], revision: s.revision + 1 })),
-  removeParam: (name) =>
-    set((s) => ({ params: s.params.filter((p) => p.name !== name), revision: s.revision + 1 })),
+  removeParam: (name) => {
+    /** 变量本体在引擎里：只删滑块会把旧值留着，引用它的表达式看起来仍然算得通 */
+    get().engine.remove(name);
+    set((s) => ({ params: s.params.filter((p) => p.name !== name), revision: s.revision + 1 }));
+  },
   toggleAnimate: (name) => {
     set((s) => ({ params: s.params.map((p) => (p.name === name ? { ...p, animate: !p.animate } : p)) }));
   },
@@ -588,7 +597,12 @@ export const useStore = create<GeoLabState>((set, get) => ({
 /* 主题落盘挂在订阅上：设置面板的开关和「载入工程」是两条独立写路径，只堵一条会漏 */
 useStore.subscribe((s, p) => {
   if (typeof window === "undefined" || s.settings.dark === p.settings.dark) return;
-  localStorage.setItem(THEME_KEY, s.settings.dark ? "dark" : "light");
+  try {
+    localStorage.setItem(THEME_KEY, s.settings.dark ? "dark" : "light");
+  } catch (e) {
+    /* 隐私模式或配额满：主题记不住，但开关本身必须照常生效 */
+    console.warn("[state] 主题偏好写入失败（本次仍生效）:", e);
+  }
 });
 
 /* 模式与显示开关同理：切一次模式就写一次 localStorage 太密，参数动画一帧一改更甚 */
@@ -611,8 +625,9 @@ useStore.subscribe((s, p) => {
           antialias: settings.antialias,
         }),
       );
-    } catch {
+    } catch (e) {
       /* 隐私模式或配额满：记不住下次打开的位置，但不能影响当下的工作台 */
+      console.warn("[state] 界面偏好写入失败（本次仍生效）:", e);
     }
   }, 250);
 });

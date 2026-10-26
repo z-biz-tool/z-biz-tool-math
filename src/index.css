@@ -408,3 +408,41 @@ body {
 .gl-console-line .out {
   color: var(--gl-text);
 }
+
+/* ---------------------------------------------------------- 窄窗降级 */
+
+/* 900×600 是全家最小窗口：八段模式条 + 示例选择 + 右侧按钮横排放不下，
+   顶栏改为两行（模式条独占一行），侧栏与参数滑块同步收窄，避免页面横向滚动。 */
+@media (max-width: 1100px) {
+  .gl-header {
+    height: auto;
+    min-height: 54px;
+    flex-wrap: wrap;
+    padding: 6px 12px;
+    gap: 6px 10px;
+  }
+
+  .gl-header .gl-logo {
+    padding-right: 4px;
+  }
+
+  .gl-logo-sub {
+    display: none;
+  }
+
+  .gl-header .ant-select {
+    width: 200px !important;
+  }
+
+  .gl-sider {
+    width: 300px;
+  }
+
+  .gl-params {
+    gap: 10px;
+  }
+
+  .gl-param .ant-slider {
+    width: 104px !important;
+  }
+}

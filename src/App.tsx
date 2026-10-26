@@ -3,7 +3,7 @@
  * 参数动画集中在这里的单个 rAF 循环，避免每个滑块各自驱动重绘。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, ConfigProvider, Modal, Popover, Segmented, Select, Switch, Tooltip, theme as antdTheme } from "antd";
+import { Button, ConfigProvider, Modal, Popover, Segmented, Select, Switch, Tooltip, App as AntdApp, theme as antdTheme } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import {
   DownloadOutlined,
@@ -61,12 +61,38 @@ export default function App() {
   const [hint, setHint] = useState("");
   /** 已读出但尚未被确认覆盖的工程：整个工作台会被替换，不能选完文件就默默动手 */
   const [pending, setPending] = useState<{ name: string; text: string } | null>(null);
+  /** 清除会话留底同样是一次删除，按破坏性操作走二次确认 */
+  const [clearing, setClearing] = useState(false);
   const say = (m: string) => {
     setHint(m);
     window.setTimeout(() => setHint((q) => (q === m ? "" : q)), 4000);
   };
 
-  const doExportPng = () => say(exportPng() ? "已导出 PNG" : "画布不可见，无法导出");
+  const doExportPng = () => {
+    try {
+      say(exportPng() ? "已导出 PNG" : "画布不可见，无法导出");
+    } catch (err) {
+      say(`导出失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const doSaveProject = () => {
+    try {
+      say(`已保存 ${saveProject()}`);
+    } catch (err) {
+      say(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const doClearSession = () => {
+    setClearing(false);
+    try {
+      localStorage.removeItem(SESSION_KEY);
+      say("已清除上次会话，下次打开回到默认示例");
+    } catch (err) {
+      say(`清除失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   const openProject = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -101,8 +127,9 @@ export default function App() {
       timer = window.setTimeout(() => {
         try {
           localStorage.setItem(SESSION_KEY, serializeProject());
-        } catch {
+        } catch (e) {
           /* 隐私模式或配额满：下次开不了窗，但也不能把当前的画布弄崩 */
+          console.warn("[session] 会话留底写入失败:", e);
         }
       }, 1200);
     });
@@ -119,7 +146,8 @@ export default function App() {
     let text: string | null = null;
     try {
       text = localStorage.getItem(SESSION_KEY);
-    } catch {
+    } catch (e) {
+      console.warn("[session] 读不到会话留底:", e);
       return;
     }
     if (!text) return;
@@ -127,11 +155,13 @@ export default function App() {
       /** 会话只是画布留底，主题跟着全家的 z-tool-theme 走 */
       applyProject(text, { keepDark: true });
       say("已恢复上次会话");
-    } catch {
+    } catch (e) {
+      console.warn("[session] 会话结构不合法，已丢弃:", e);
       try {
         localStorage.removeItem(SESSION_KEY);
-      } catch {
+      } catch (e2) {
         /* 清不掉就算了，下一次启动仍会走静默放弃这条路 */
+        console.warn("[session] 丢弃损坏留底失败:", e2);
       }
     }
   }, []);
@@ -202,7 +232,7 @@ export default function App() {
         }
         if (k === "s") {
           e.preventDefault();
-          say(`已保存 ${saveProject()}`);
+          doSaveProject();
           return;
         }
         if (k === "e") {
@@ -246,6 +276,7 @@ export default function App() {
       }}
     >
       <div className="gl-root" data-dark={dark}>
+        <AntdApp style={{ display: "contents" }}>
         <div className="gl-header">
           <div className="gl-logo">
             <span className="gl-logo-mark">∮</span>
@@ -291,15 +322,16 @@ export default function App() {
             <Button
               size="small"
               icon={<FileImageOutlined />}
+              aria-label="导出 PNG"
               disabled={mode === "console"}
               onClick={doExportPng}
             />
           </Tooltip>
           <Tooltip title="保存工程（JSON，⌘/Ctrl+S）">
-            <Button size="small" icon={<DownloadOutlined />} onClick={() => say(`已保存 ${saveProject()}`)} />
+            <Button size="small" icon={<DownloadOutlined />} aria-label="保存工程" onClick={doSaveProject} />
           </Tooltip>
           <Tooltip title="打开工程">
-            <Button size="small" icon={<UploadOutlined />} onClick={() => fileRef.current?.click()} />
+            <Button size="small" icon={<UploadOutlined />} aria-label="打开工程" onClick={() => fileRef.current?.click()} />
           </Tooltip>
           <input
             ref={fileRef}
@@ -323,14 +355,7 @@ export default function App() {
                 <Button
                   size="small"
                   style={{ marginTop: 8 }}
-                  onClick={() => {
-                    try {
-                      localStorage.removeItem(SESSION_KEY);
-                    } catch {
-                      /* 读不到的时候也谈不上清除 */
-                    }
-                    say("已清除上次会话，下次打开回到默认示例");
-                  }}
+                  onClick={() => setClearing(true)}
                 >
                   清除已存会话
                 </Button>
@@ -343,7 +368,7 @@ export default function App() {
             }
           >
             <Tooltip title="显示设置">
-              <Button size="small" icon={<SettingOutlined />} />
+              <Button size="small" icon={<SettingOutlined />} aria-label="显示设置" />
             </Tooltip>
           </Popover>
         </div>
@@ -364,6 +389,7 @@ export default function App() {
           okText="覆盖"
           cancelText="取消"
           okButtonProps={{ danger: true }}
+          cancelButtonProps={{ autoFocus: true }}
           onCancel={() => setPending(null)}
           onOk={confirmProject}
         >
@@ -372,6 +398,21 @@ export default function App() {
             想保留现在这份，先按 ⌘/Ctrl+S 保存工程。
           </p>
         </Modal>
+        <Modal
+          open={clearing}
+          title="清除已存会话？"
+          okText="清除"
+          cancelText="取消"
+          okButtonProps={{ danger: true }}
+          cancelButtonProps={{ autoFocus: true }}
+          onCancel={() => setClearing(false)}
+          onOk={doClearSession}
+        >
+          <p style={{ margin: 0 }}>
+            下次打开会回到默认示例。当前画布不受影响；被删掉的是上次关闭时自动留下的那份快照，无法恢复。
+          </p>
+        </Modal>
+        </AntdApp>
       </div>
     </ConfigProvider>
   );

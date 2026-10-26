@@ -1482,6 +1482,14 @@ export class GeometryDoc {
     this.recompute();
   }
 
+  canUndo(): boolean {
+    return this.undoStack.length > 0;
+  }
+
+  canRedo(): boolean {
+    return this.redoStack.length > 0;
+  }
+
   undo(): boolean {
     const prev = this.undoStack.pop();
     if (prev === undefined) return false;

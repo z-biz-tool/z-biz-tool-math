@@ -2,7 +2,8 @@
  * 底部参数条：几何画板式的数值滑块。动画由 App 里唯一的 rAF 循环推进，
  * 这里只负责编辑参数本身（改名、调范围、播放/暂停、删除）。
  */
-import { Button, Input, InputNumber, Slider, Tooltip } from "antd";
+import { useEffect, useState } from "react";
+import { App as AntdApp, Button, Input, InputNumber, Slider, Tooltip } from "antd";
 import { DeleteOutlined, PauseOutlined, PlayCircleOutlined, PlusOutlined } from "@ant-design/icons";
 import { useStore, type Param } from "../state.ts";
 
@@ -23,25 +24,62 @@ function rd(v: number): number {
 }
 
 function ParamChip({ p }: { p: Param }) {
+  const { message, modal } = AntdApp.useApp();
   const setParam = useStore((s) => s.setParam);
   const removeParam = useStore((s) => s.removeParam);
   const toggleAnimate = useStore((s) => s.toggleAnimate);
-  const rename = (raw: string) => {
-    const name = raw.trim();
-    if (!VALID.test(name) || RESERVED.has(name)) return;
+  /**
+   * 名字先落在草稿里、失焦或回车才提交：
+   * 直接受控改名时，删到空串就会被拒绝并弹回上一个字，等于没法重打一个名字。
+   */
+  const [draft, setDraft] = useState(p.name);
+  useEffect(() => setDraft(p.name), [p.name]);
+
+  const commitName = () => {
+    const name = draft.trim();
+    if (name === p.name) {
+      setDraft(p.name);
+      return;
+    }
+    if (!VALID.test(name) || RESERVED.has(name)) {
+      message.warning(`「${name || "空"}」不能作参数名：需字母开头，且不能占用 i、pi 等保留名`);
+      setDraft(p.name);
+      return;
+    }
     const st = useStore.getState();
-    if (name === p.name || st.params.some((q) => q.name === name)) return;
+    if (st.params.some((q) => q.name === name)) {
+      message.warning(`参数 ${name} 已存在`);
+      setDraft(p.name);
+      return;
+    }
     st.engine.remove(p.name);
     st.engine.setNum(name, p.value);
     st.patch({ params: st.params.map((q) => (q.name === p.name ? { ...q, name } : q)), revision: st.revision + 1 });
+    setDraft(name);
+    message.success(`已把参数 ${p.name} 改名为 ${name}；表达式里写 ${p.name} 的地方要手动改成 ${name}`);
   };
+
+  const askRemove = () =>
+    modal.confirm({
+      title: `删除参数「${p.name}」？`,
+      content: `引用 ${p.name} 的表达式会立刻变成未定义并在画布上报错。参数可以重新添加，但当前值不会保留。`,
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => removeParam(p.name),
+    });
+
   return (
     <div className="gl-param">
       <Tooltip title="参数名，表达式里直接写这个名字；i 已被虚数单位占用">
         <Input
           size="small"
-          value={p.name}
-          onChange={(e) => rename(e.target.value)}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitName}
+          onPressEnter={(e) => (e.target as HTMLInputElement).blur()}
+          aria-label={`参数 ${p.name} 的名称`}
           style={{ width: 44 }}
           className="gl-param-label"
         />
@@ -60,6 +98,7 @@ function ParamChip({ p }: { p: Param }) {
         value={rd(p.value)}
         step={p.step}
         style={{ width: 70 }}
+        aria-label={`参数 ${p.name} 的值`}
         onChange={(v) => {
           if (typeof v === "number" && Number.isFinite(v)) setParam(p.name, v);
         }}
@@ -69,6 +108,7 @@ function ParamChip({ p }: { p: Param }) {
           size="small"
           type={p.animate ? "primary" : "text"}
           icon={p.animate ? <PauseOutlined /> : <PlayCircleOutlined />}
+          aria-label={p.animate ? `暂停参数 ${p.name} 的动画` : `播放参数 ${p.name} 的动画`}
           onClick={() => toggleAnimate(p.name)}
         />
       </Tooltip>
@@ -80,6 +120,7 @@ function ParamChip({ p }: { p: Param }) {
           step={0.05}
           value={p.speed}
           style={{ width: 62 }}
+          aria-label={`参数 ${p.name} 的动画速度`}
           onChange={(v) => {
             if (typeof v === "number" && Number.isFinite(v)) {
               const st = useStore.getState();
@@ -91,7 +132,14 @@ function ParamChip({ p }: { p: Param }) {
         />
       )}
       <Tooltip title="删除参数">
-        <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => removeParam(p.name)} />
+        <Button
+          size="small"
+          type="text"
+          danger
+          icon={<DeleteOutlined />}
+          aria-label={`删除参数 ${p.name}`}
+          onClick={askRemove}
+        />
       </Tooltip>
     </div>
   );

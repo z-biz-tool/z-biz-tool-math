@@ -1645,7 +1645,7 @@ ok("实数快路径静态判定", isRealStatic(parseExpr("x^2+sin(x)"), ["x"], e
   const app = read("../src/App.tsx");
   const main = read("../src/main.tsx");
   ok("八种模式各有数字快捷键", app.includes('"12345678"'), "未见 ⌘1…⌘8 的分派");
-  ok("⌘S 绑到保存工程", /k === "s"[\s\S]{0,80}saveProject\(\)/.test(app), "⌘S 未接 saveProject");
+  ok("⌘S 绑到保存工程", /k === "s"[\s\S]{0,80}doSaveProject\(\)/.test(app) && /doSaveProject = \(\) =>[\s\S]{0,160}saveProject\(\)/.test(app), "⌘S 未接 saveProject");
   ok("⌘E 绑到导出 PNG", /k === "e"[\s\S]{0,60}doExportPng\(\)/.test(app), "⌘E 未接导出");
   /** 撤销栈只在几何模式：函数模式下按 ⌘Z 悄悄改几何图，用户会找不到东西去哪了 */
   ok("撤销仅在几何模式生效", /k === "z"[\s\S]{0,160}st\.mode !== "geom"/.test(app), "⌘Z 未按模式设限");

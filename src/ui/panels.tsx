@@ -3,7 +3,7 @@
  * 所有写回都走 useStore.getState() 的动作，组件只订阅自己渲染需要的切片。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, Input, InputNumber, Segmented, Select, Slider, Switch, Tooltip } from "antd";
+import { Button, Input, InputNumber, Segmented, Select, Slider, Switch, Tooltip, App as AntdApp } from "antd";
 import {
   DeleteOutlined,
   EyeInvisibleOutlined,
@@ -77,11 +77,12 @@ function Num(props: {
   );
 }
 
-function Swatch({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function Swatch({ value, onChange, label = "颜色" }: { value: string; onChange: (v: string) => void; label?: string }) {
   return (
     <input
       type="color"
       className="gl-swatch"
+      aria-label={label}
       value={/^#[0-9a-f]{6}$/i.test(value) ? value : "#667eea"}
       onChange={(e) => onChange(e.target.value)}
     />
@@ -124,12 +125,13 @@ function Slide({
   );
 }
 
-function Eye({ on, onClick }: { on: boolean; onClick: () => void }) {
+function Eye({ on, onClick, label }: { on: boolean; onClick: () => void; label?: string }) {
   return (
     <Button
       size="small"
       type="text"
       icon={on ? <EyeOutlined /> : <EyeInvisibleOutlined />}
+      aria-label={label ? (on ? `隐藏${label}` : `显示${label}`) : on ? "隐藏" : "显示"}
       onClick={onClick}
       style={{ opacity: on ? 0.95 : 0.45 }}
     />
@@ -177,26 +179,41 @@ const LAYER_KINDS: { value: LayerKind; label: string }[] = [
 const RELS = ["<", "<=", ">", ">="].map((r) => ({ value: r as Layer["rel"], label: r }));
 
 function LayerCard({ l }: { l: Layer }) {
+  const { modal } = AntdApp.useApp();
   const active = useStore((s) => s.activeLayer === l.id);
   const st = useStore.getState();
   const upd = (p: Partial<Layer>) => useStore.getState().updateLayer(l.id, p);
   const kind = l.kind;
+  /** 图层没有撤销栈：删掉就是删掉，确认文案带上用户认得出来的名字 */
+  const name = l.label || l.expr.trim() || "未命名图层";
+  const askRemove = () =>
+    modal.confirm({
+      title: `删除图层「${name}」？`,
+      content: "表达式、颜色、线宽与采样设置会一并丢弃，无法撤销。",
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => useStore.getState().removeLayer(l.id),
+    });
   return (
     <div className="gl-layer" data-active={active} onClick={() => useStore.getState().patch({ activeLayer: l.id })}>
       <Row>
         <Eye
           on={l.visible}
+          label={`图层「${name}」`}
           onClick={() => {
             upd({ visible: !l.visible });
             st.bump();
           }}
         />
-        <Swatch value={l.color} onChange={(v) => upd({ color: v })} />
+        <Swatch value={l.color} label={`图层「${name}」的颜色`} onChange={(v) => upd({ color: v })} />
         <Input
           className="gl-grow"
           size="small"
           variant="borderless"
           style={exprStyle}
+          aria-label={`图层「${name}」的表达式`}
           value={l.expr}
           placeholder={kind === "polar" ? "sin(4*theta)" : kind === "sequence" ? "1 + 1/n" : "sin(x)*exp(-x/6)"}
           onChange={(e) => upd({ expr: e.target.value })}
@@ -207,7 +224,8 @@ function LayerCard({ l }: { l: Layer }) {
             type="text"
             danger
             icon={<DeleteOutlined />}
-            onClick={() => useStore.getState().removeLayer(l.id)}
+            aria-label={`删除图层「${name}」`}
+            onClick={askRemove}
           />
         </Tooltip>
       </Row>
@@ -304,7 +322,7 @@ function FuncPanel() {
         {layers.map((l) => (
           <LayerCard key={l.id} l={l} />
         ))}
-        <Row>
+        <div className="gl-row" style={{ flexWrap: "wrap" }}>
           <Button
             size="small"
             icon={<PlusOutlined />}
@@ -319,7 +337,7 @@ function FuncPanel() {
           <Button size="small" onClick={() => useStore.getState().addLayer("polar", "1 + cos(theta)")}>
             极坐标
           </Button>
-        </Row>
+        </div>
       </Card>
       <Card title="坐标轴">
         <Toggle label="对数刻度（x）" on={logX} onChange={(v) => setLog("x", v)} />
@@ -398,10 +416,41 @@ const TOOL_GLYPH: Record<ToolKind, string> = {
 };
 
 function GeoPanel() {
+  const { modal } = AntdApp.useApp();
   const geo = useStore((s) => s.geo);
+  /** 撤销栈是文档内的私有状态，只能借 store 每次更新时重新问一遍 */
+  const canUndo = useStore((s) => s.geo.doc.canUndo());
+  const canRedo = useStore((s) => s.geo.doc.canRedo());
   const doc = geo.doc;
   const objects = doc.all();
   const label = (id: string) => doc.get(id)?.label ?? id;
+  const askRemove = (id: string, name: string) =>
+    modal.confirm({
+      title: `删除对象「${name}」？`,
+      content: "依赖它的对象会一并失效。这一步可以用 ⌘/Ctrl+Z（或下方「撤销」）恢复。",
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => {
+        doc.remove(id);
+        useStore.getState().setGeo({ selected: null, pending: [] });
+      },
+    });
+  const askNewBoard = () =>
+    modal.confirm({
+      title: "新建空白画板？",
+      content: `当前 ${objects.length} 个几何对象会被清空，撤销记录也不会保留。想留下就先按 ⌘/Ctrl+S 保存工程。`,
+      okText: "新建",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => {
+        const fresh = new GeometryDoc();
+        fresh.engine = useStore.getState().engine;
+        useStore.getState().setGeo({ doc: fresh, pending: [], selected: null });
+      },
+    });
   return (
     <div className="gl-panel">
       <Card title="工具">
@@ -431,6 +480,7 @@ function GeoPanel() {
           <Button
             size="small"
             icon={<UndoOutlined />}
+            disabled={!canUndo}
             onClick={() => {
               doc.undo();
               useStore.getState().bump();
@@ -441,6 +491,7 @@ function GeoPanel() {
           <Button
             size="small"
             icon={<RedoOutlined />}
+            disabled={!canRedo}
             onClick={() => {
               doc.redo();
               useStore.getState().bump();
@@ -465,6 +516,8 @@ function GeoPanel() {
               style={{ height: 24, width: 26, padding: 0, fontSize: 11 }}
               data-on={g.visible !== false}
               title="显示/隐藏"
+              aria-label={`${g.visible === false ? "显示" : "隐藏"}对象「${g.label}」`}
+              aria-pressed={g.visible !== false}
               onClick={() => {
                 doc.setVisible(g.id, g.visible === false);
                 useStore.getState().bump();
@@ -481,23 +534,13 @@ function GeoPanel() {
               type="text"
               danger
               icon={<DeleteOutlined />}
-              onClick={() => {
-                doc.remove(g.id);
-                useStore.getState().setGeo({ selected: null, pending: [] });
-              }}
+              aria-label={`删除对象「${g.label}」`}
+              onClick={() => askRemove(g.id, g.label)}
             />
           </Row>
         ))}
         <Row>
-          <Button
-            size="small"
-            className="gl-grow"
-            onClick={() => {
-              const fresh = new GeometryDoc();
-              fresh.engine = useStore.getState().engine;
-              useStore.getState().setGeo({ doc: fresh, pending: [], selected: null });
-            }}
-          >
+          <Button size="small" className="gl-grow" onClick={askNewBoard}>
             新建空白画板
           </Button>
         </Row>
@@ -578,8 +621,19 @@ const FIELD_MODES = [
 ];
 
 function VectorPanel() {
+  const { modal } = AntdApp.useApp();
   const v = useStore((s) => s.vec);
   const set = (p: Partial<typeof v>) => useStore.getState().setVec(p);
+  const askRemove = (id: string, label: string) =>
+    modal.confirm({
+      title: `删除向量「${label || id}」？`,
+      content: "它的起点与分量表达式会一起丢掉，无法撤销。",
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => set({ arrows: useStore.getState().vec.arrows.filter((q) => q.id !== id) }),
+    });
   return (
     <div className="gl-panel">
       <Card title="场">
@@ -624,12 +678,14 @@ function VectorPanel() {
           <Row key={a.id}>
             <Swatch
               value={a.color}
+              label={`向量「${a.label}」的颜色`}
               onChange={(c) => set({ arrows: v.arrows.map((q) => (q.id === a.id ? { ...q, color: c } : q)) })}
             />
             <Input
               size="small"
               style={{ width: 34, ...exprStyle }}
               value={a.label}
+              aria-label="向量名称"
               onChange={(e) => set({ arrows: v.arrows.map((q) => (q.id === a.id ? { ...q, label: e.target.value } : q)) })}
             />
             <Input
@@ -637,6 +693,7 @@ function VectorPanel() {
               size="small"
               style={exprStyle}
               value={a.vec}
+              aria-label={`向量「${a.label}」的分量`}
               placeholder="[3,1]"
               onChange={(e) => set({ arrows: v.arrows.map((q) => (q.id === a.id ? { ...q, vec: e.target.value } : q)) })}
             />
@@ -645,7 +702,8 @@ function VectorPanel() {
               type="text"
               danger
               icon={<DeleteOutlined />}
-              onClick={() => set({ arrows: v.arrows.filter((q) => q.id !== a.id) })}
+              aria-label={`删除向量「${a.label}」`}
+              onClick={() => askRemove(a.id, a.label)}
             />
           </Row>
         ))}
@@ -739,6 +797,7 @@ function linReadout(a: Mat, b: number[]): LinReadout {
 }
 
 function LinPanel() {
+  const { modal } = AntdApp.useApp();
   const lin = useStore((s) => s.lin);
   const engine = useStore((s) => s.engine);
   const setLin = useStore((s) => s.setLin);
@@ -770,6 +829,19 @@ function LinPanel() {
     // 画布只有 2×2 的闭式矩阵指数，升到三维必须回到离散幂次
     if (dim === 3) setLin({ dim, a, b, useExp: false });
     else setLin({ dim, a, b });
+  };
+  const changeDim = (dim: 2 | 3) => {
+    if (dim >= lin.dim) return resize(dim);
+    /* 降维只保留左上块：第 3 行、第 3 列与 b 的第三个分量都会消失 */
+    modal.confirm({
+      title: "缩小为 2 × 2？",
+      content: "矩阵的第 3 行、第 3 列以及 b 的第三个分量会被丢弃，无法撤销。",
+      okText: "缩小",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => resize(dim),
+    });
   };
   const setExp = (on: boolean) => {
     // t 的含义在两种模式下不同（整数幂次 ↔ 流时间），切换时把值夹进新范围
@@ -805,7 +877,7 @@ function LinPanel() {
   return (
     <div className="gl-panel">
       <Card title="矩阵 A（每格一个表达式）">
-        <Segmented size="small" block value={lin.dim} options={LIN_DIMS} onChange={(v) => resize(v as 2 | 3)} />
+        <Segmented size="small" block value={lin.dim} options={LIN_DIMS} onChange={(v) => changeDim(v as 2 | 3)} />
         <Row>
           <span style={bracket}>[</span>
           <div style={grid}>
@@ -816,6 +888,7 @@ function LinPanel() {
                 style={exprStyle}
                 value={v}
                 placeholder="0"
+                aria-label={`矩阵 A 第 ${Math.floor(i / lin.dim) + 1} 行第 ${(i % lin.dim) + 1} 列`}
                 onChange={(e) => setCell(i, e.target.value)}
               />
             ))}
@@ -837,6 +910,7 @@ function LinPanel() {
                 style={exprStyle}
                 value={v}
                 placeholder="0"
+                aria-label={`右端项 b 第 ${i + 1} 个分量`}
                 onChange={(e) => setElem(i, e.target.value)}
               />
             ))}
@@ -1028,6 +1102,7 @@ function LossCurve({ data }: { data: number[] }) {
 }
 
 function NnPanel() {
+  const { modal } = AntdApp.useApp();
   const nn = useStore((s) => s.nn);
   const setNn = useStore((s) => s.setNn);
   const rafId = useRef(0);
@@ -1138,6 +1213,21 @@ function NnPanel() {
     setNn({ running: !nn.running });
   };
 
+  /** 重置会丢掉整段训练，先问清楚；确认之后才停训练并重建 */
+  const askRebuild = () =>
+    modal.confirm({
+      title: "重置网络？",
+      content: `当前训练到第 ${nn.epochs} 轮，权重、损失曲线与正确率都会清零，无法恢复。`,
+      okText: "重置",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => {
+        setNn({ running: false });
+        rebuild();
+      },
+    });
+
   return (
     <div className="gl-panel">
       <Card title="数据与网络">
@@ -1176,7 +1266,7 @@ function NnPanel() {
           >
             {nn.running ? "暂停" : "训练"}
           </Button>
-          <Button size="small" icon={<ReloadOutlined />} onClick={rebuild}>
+          <Button size="small" icon={<ReloadOutlined />} aria-label="重置网络" onClick={askRebuild}>
             重置
           </Button>
         </Row>
@@ -1218,10 +1308,22 @@ const SURF_STYLES: { value: SurfStyle; label: string }[] = [
 ];
 
 function SurfCard({ l }: { l: SurfLayer }) {
+  const { modal } = AntdApp.useApp();
   const active = useStore((s) => s.activeLayer === l.id);
   const set = (p: Partial<SurfLayer>) =>
     useStore.getState().setSurf({
       layers: useStore.getState().surf.layers.map((q) => (q.id === l.id ? { ...q, ...p } : q)),
+    });
+  const name = l.label || l.expr.trim() || "未命名曲面";
+  const askRemove = () =>
+    modal.confirm({
+      title: `删除曲面「${name}」？`,
+      content: "表达式、范围、配色与分辨率会一并丢弃，无法撤销。",
+      okText: "删除",
+      cancelText: "取消",
+      okButtonProps: { danger: true },
+      focusable: { autoFocusButton: "cancel" },
+      onOk: () => useStore.getState().setSurf({ layers: useStore.getState().surf.layers.filter((q) => q.id !== l.id) }),
     });
   const rangeLabel =
     l.kind === "graph" ? "x 范围 / y 范围" : l.kind === "param" ? "u 范围 / v 范围" : l.kind === "revolve" ? "t 范围 · — · 段数" : "t 范围";
@@ -1229,17 +1331,25 @@ function SurfCard({ l }: { l: SurfLayer }) {
   return (
     <div className="gl-layer" data-active={active} onClick={() => useStore.getState().patch({ activeLayer: l.id })}>
       <Row>
-        <Eye on={l.visible} onClick={() => set({ visible: !l.visible })} />
-        <Swatch value={l.color} onChange={(v) => set({ color: v })} />
+        <Eye on={l.visible} label={`曲面「${name}」`} onClick={() => set({ visible: !l.visible })} />
+        <Swatch value={l.color} label={`曲面「${name}」的颜色`} onChange={(v) => set({ color: v })} />
         <Input
           className="gl-grow"
           size="small"
           variant="borderless"
           style={exprStyle}
+          aria-label={`曲面「${name}」的表达式`}
           value={l.expr}
           onChange={(e) => set({ expr: e.target.value })}
         />
-        <Button size="small" type="text" danger icon={<DeleteOutlined />} onClick={() => useStore.getState().setSurf({ layers: useStore.getState().surf.layers.filter((q) => q.id !== l.id) })} />
+        <Button
+          size="small"
+          type="text"
+          danger
+          icon={<DeleteOutlined />}
+          aria-label={`删除曲面「${name}」`}
+          onClick={askRemove}
+        />
       </Row>
       {l.kind !== "graph" && (
         <Row>
