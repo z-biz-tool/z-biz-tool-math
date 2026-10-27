@@ -724,8 +724,9 @@ export function applyPreset(key: string): void {
     for (const d of p.defs) {
       try {
         engine.define(d);
-      } catch {
-        /* 单个定义失败不影响其余部分 */
+      } catch (e) {
+        /* 单个定义失败不影响其余部分，但要让用户知道预设是残缺的 */
+        console.warn(`[presets] 应用预设「${p.key}」时单个定义失败:`, e);
       }
     }
   const layers = p.layers?.();
