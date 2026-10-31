@@ -1,0 +1,15 @@
+{
+  "id": "math",
+  "displayName": "GeoLab 数学实验室",
+  "description": "几何画板式动态几何 + 函数 / 复平面 / 向量 / 曲面可视化",
+  "acceptsDeepLink": true,
+  "actions": [
+    "open"
+  ],
+  "keywords": [
+    "数学",
+    "几何",
+    "函数",
+    "可视化"
+  ]
+}
