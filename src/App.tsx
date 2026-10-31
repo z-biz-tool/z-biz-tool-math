@@ -3,7 +3,7 @@
  * 参数动画集中在这里的单个 rAF 循环，避免每个滑块各自驱动重绘。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, ConfigProvider, Modal, Popover, Segmented, Select, Switch, Tooltip, App as AntdApp, theme as antdTheme, message } from "antd";
+import { Button, ConfigProvider, Modal, Popover, Segmented, Select, Switch, Tooltip, App as AntdApp, theme as antdTheme } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import {
   DownloadOutlined,
@@ -73,43 +73,8 @@ export default function App() {
     window.setTimeout(() => setHint((q) => (q === m ? "" : q)), 4000);
   };
 
-  // ── zbiz:// 深链接线（2026-10-31 接入共享层）──
-  //
-  // 别的产品用 `zbiz://math/open?preset=func-basic&mode=geom` 唤起本应用时，
-  // Rust 把深链收进队列并 emit("zbiz-open")。
-  //
-  // **机制**（冷启动补取、事件监听、不静默吞掉）在共享层
-  // `z-biz-tool-shared/protocol` 的 `startDeepLinkReceiver` 里，家族各仓共用同一份实现；
-  // **语义**（math 该做什么）在本仓的 `_shared/deepLink.ts` 里，通过 translate 回调注入。
-  useEffect(() => {
-    const stop = startDeepLinkReceiver({
-      productId: "math",
-      invoke: () => invoke<Handoff[]>(ZBIZ_TAKE_PENDING),
-      listen: (event, handler) => listen(event, handler),
-      translate: (item) => {
-        const out = resolveMathDeepLink(item);
-        if (out.problem) {
-          return { ok: false, problem: out.problem };
-        }
-        return { ok: true, effect: { preset: out.preset, mode: out.mode } };
-      },
-      onProblem: (msg, item) => {
-        // 静默吞掉的话，用户看到的就是「点了没反应」
-        console.warn("[math] 收到未适配的深链", item, msg);
-        message.warning(msg);
-      },
-      onEffect: (effect) => {
-        const preset = effect.preset as string | null;
-        const mode = effect.mode as Mode | null;
-        const st = useStore.getState();
-        // 先应用预设（预设自带 mode），再用显式 mode 覆盖，保证显式意图优先
-        if (preset) applyPreset(preset);
-        if (mode) st.setMode(mode);
-      },
-      log: (msg, item) => console.debug("[math] 深链", msg, item),
-    });
-    return stop;
-  }, []);
+  // ── zbiz:// 深链接线见文件末尾的 <DeepLinkBridge />：它必须待在 <AntdApp> 内部，
+  //    message 要走 App.useApp()（静态 message 挂全局 holder，不吃本页的暗色主题）。
 
   const doExportPng = () => {
     try {
@@ -320,6 +285,7 @@ export default function App() {
     >
       <div className="gl-root" data-dark={dark}>
         <AntdApp style={{ display: "contents" }}>
+        <DeepLinkBridge />
         <div className="gl-header">
           <div className="gl-logo">
             <span className="gl-logo-mark">∮</span>
@@ -468,4 +434,51 @@ function SwitchRow({ label, on, onChange }: { label: string; on: boolean; onChan
       <Switch size="small" checked={on} onChange={onChange} />
     </div>
   );
+}
+
+/**
+ * zbiz:// 深链接线（2026-10-31 接入共享层）。
+ *
+ * 别的产品用 `zbiz://math/open?preset=func-basic&mode=geom` 唤起本应用时，
+ * Rust 把深链收进队列并 emit("zbiz-open")。
+ *
+ * **机制**（冷启动补取、事件监听、不静默吞掉）在共享层
+ * `z-biz-tool-shared/protocol` 的 `startDeepLinkReceiver` 里，家族各仓共用同一份实现；
+ * **语义**（math 该做什么）在本仓的 `_shared/deepLink.ts` 里，通过 translate 回调注入。
+ *
+ * 必须待在 `<AntdApp>` 内部：message 要走 `App.useApp()`，
+ * 静态 message 挂在全局 holder 上，不吃本页 ConfigProvider 的暗色主题。
+ */
+function DeepLinkBridge() {
+  const { message } = AntdApp.useApp();
+  useEffect(() => {
+    const stop = startDeepLinkReceiver({
+      productId: "math",
+      invoke: () => invoke<Handoff[]>(ZBIZ_TAKE_PENDING),
+      listen: (event, handler) => listen(event, handler),
+      translate: (item) => {
+        const out = resolveMathDeepLink(item);
+        if (out.problem) {
+          return { ok: false, problem: out.problem };
+        }
+        return { ok: true, effect: { preset: out.preset, mode: out.mode } };
+      },
+      onProblem: (msg, item) => {
+        // 静默吞掉的话，用户看到的就是「点了没反应」
+        console.warn("[math] 收到未适配的深链", item, msg);
+        message.warning(msg);
+      },
+      onEffect: (effect) => {
+        const preset = effect.preset as string | null;
+        const mode = effect.mode as Mode | null;
+        const st = useStore.getState();
+        // 先应用预设（预设自带 mode），再用显式 mode 覆盖，保证显式意图优先
+        if (preset) applyPreset(preset);
+        if (mode) st.setMode(mode);
+      },
+      log: (msg, item) => console.debug("[math] 深链", msg, item),
+    });
+    return stop;
+  }, [message]);
+  return null;
 }
