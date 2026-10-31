@@ -6,13 +6,17 @@
  */
 
 import { GeometryDoc } from "../core/geometry.ts";
+import { mechWorld } from "../core/mech.ts";
 import { Viewport, type ViewportInit } from "../core/view.ts";
 import {
   useStore,
   type ComplexState,
+  type FractalState,
   type GeoLabState,
   type Layer,
   type LinState,
+  type LifeState,
+  type MechState,
   type Mode,
   type NnState,
   type Param,
@@ -21,7 +25,13 @@ import {
   type VectorState,
 } from "../state.ts";
 
-const MODES: Mode[] = ["func", "geom", "complex", "vector", "lin", "nn", "surf", "console"];
+const MODES: Mode[] = ["func", "geom", "complex", "vector", "lin", "nn", "surf", "life", "frac", "mech", "console"];
+
+/** 生命游戏落盘的部分：世界布局是模块单例，只带配置不带棋盘 */
+type LifePersist = Pick<LifeState, "rule" | "speed" | "showGrid">;
+
+/** 力学落盘的部分：球的世界单例不带，只带场景参数（球的布局由 store 配置重建） */
+type MechPersist = Omit<MechState, "running">;
 
 /**
  * 神经网络落盘的部分：只有超参数与显示设置。
@@ -60,6 +70,9 @@ export interface Project {
   lin: LinState;
   nn: NnPersist;
   surf: SurfState;
+  life?: LifePersist;
+  frac?: FractalState;
+  mech?: MechPersist;
   settings: Settings;
   views: Partial<Record<Mode, ViewportInit>>;
   /** 几何文档快照（GeometryDoc.toJSON 的原文） */
@@ -97,6 +110,17 @@ export function serializeProject(): string {
     lin: s.lin,
     nn: nnToProject(s.nn),
     surf: s.surf,
+    life: { rule: s.life.rule, speed: s.life.speed, showGrid: s.life.showGrid },
+    frac: s.frac,
+    mech: {
+      balls: s.mech.balls,
+      gravity: s.mech.gravity,
+      restitution: s.mech.restitution,
+      drag: s.mech.drag,
+      speed: s.mech.speed,
+      trails: s.mech.trails,
+      showVectors: s.mech.showVectors,
+    },
     settings: s.settings,
     views,
     geo: s.geo.doc.toJSON(),
@@ -164,6 +188,11 @@ export function applyProject(text: string, opts?: { keepDark?: boolean }): void 
       ? { ...s.nn, ...data.nn, model: null, data: null, running: false, epochs: 0, loss: 0, acc: 0, curve: [] }
       : s.nn,
     surf: { ...s.surf, ...data.surf },
+    /* 生命游戏只回填配置，运行态与棋盘不随工程走 */
+    life: data.life ? { ...s.life, ...data.life, running: false, tool: s.life.tool } : s.life,
+    frac: data.frac ? { ...s.frac, ...data.frac } : s.frac,
+    /* 力学只回填配置，运行态停住；世界单例按新球表整体重铺 */
+    mech: data.mech ? { ...s.mech, ...data.mech, running: false } : s.mech,
     settings: opts?.keepDark
       ? { ...s.settings, ...data.settings, dark: s.settings.dark }
       : { ...s.settings, ...data.settings },
@@ -179,6 +208,7 @@ export function applyProject(text: string, opts?: { keepDark?: boolean }): void 
     snap: data.geoUi?.snap ?? false,
     grid: data.geoUi?.grid ?? true,
   });
+  if (data.mech) mechWorld.resetFrom(useStore.getState().mech.balls);
 }
 
 /** 合成舞台上所有画布并下载为 PNG；返回 false 表示当前没有可导出的可见画布 */

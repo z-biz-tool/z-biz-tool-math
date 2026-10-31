@@ -9,9 +9,12 @@ import {
   useStore,
   uid,
   type ComplexState,
+  type FractalState,
   type GeoState,
   type Layer,
   type LinState,
+  type LifeState,
+  type MechState,
   type Mode,
   type NnState,
   type Param,
@@ -19,6 +22,8 @@ import {
   type SurfState,
   type VectorState,
 } from "./state.ts";
+import { applySeed, type LifeSeed } from "./core/life.ts";
+import { mechWorld } from "./core/mech.ts";
 
 export interface Preset {
   key: string;
@@ -36,6 +41,11 @@ export interface Preset {
   /** 神经网络：只给可序列化的超参数，模型由面板按它们重建 */
   nn?: Partial<NnState>;
   surf?: Partial<SurfState>;
+  /** 生命游戏：配置 + 初始布局（布局直接写进模块单例，不进工程格式） */
+  life?: Partial<LifeState> & { seed?: LifeSeed };
+  frac?: Partial<FractalState>;
+  /** 力学：场景参数 + 球表（世界单例由 resetFrom 重建） */
+  mech?: Partial<MechState>;
   /** 几何：给出一个全新的构造文档 */
   geo?: (doc: GeometryDoc, eng: Engine) => void;
   /** [cx, cy, scale] */
@@ -712,6 +722,128 @@ export const PRESETS: Preset[] = [
       doc.addMeasure("dist", [O, P], [-7.6, -2.4], "|OP|");
     },
   },
+  /* ---------------------------------------------------------- 生命游戏 */
+  {
+    key: "life-gun",
+    title: "Gosper 滑翔机枪",
+    mode: "life",
+    hint: "持续吐出滑翔机的经典图案，按「演化」开跑",
+    life: { rule: "B3/S23", speed: 12, showGrid: true, tool: "draw", seed: { kind: "gun" } },
+    view: [50, 130, 9],
+  },
+  {
+    key: "life-rpentomino",
+    title: "R-五连块",
+    mode: "life",
+    hint: "5 个格子长出上千代的混乱，看复杂如何从简单里冒出来",
+    life: { rule: "B3/S23", speed: 30, showGrid: true, tool: "draw", seed: { kind: "rpentomino" } },
+    view: [180, 120, 9],
+  },
+  {
+    key: "life-highlife",
+    title: "HighLife 复制体",
+    mode: "life",
+    hint: "B36/S23：撒一把随机种子，留意会自我复制的「复制体」",
+    life: { rule: "B36/S23", speed: 20, showGrid: true, tool: "draw", seed: { kind: "random", density: 0.25 } },
+    view: [180, 120, 6],
+  },
+  /* ---------------------------------------------------------- 分形 */
+  {
+    key: "frac-mandel",
+    title: "Mandelbrot 全景",
+    mode: "frac",
+    hint: "z ← z² + c 的参数图目录：每个点是一种 Julia 的形状",
+    view: [-0.6, 0, 250],
+    frac: { kind: "mandelbrot", maxIter: 200, colormap: "turbo", smooth: true },
+  },
+  {
+    key: "frac-seahorse",
+    title: "Seahorse Valley",
+    mode: "frac",
+    hint: "−0.745+0.113i 附近的螺旋海马湾，边界无限细节",
+    view: [-0.7453, 0.1127, 3200],
+    frac: { kind: "mandelbrot", maxIter: 500, colormap: "inferno", smooth: true },
+  },
+  {
+    key: "frac-julia",
+    title: "Julia 树状集",
+    mode: "frac",
+    hint: "c = −0.8+0.156i 的连通 Julia 集，拖 cr/ci 看形状裂变",
+    view: [0, 0, 250],
+    frac: { kind: "julia", cr: -0.8, ci: 0.156, maxIter: 220, colormap: "viridis", smooth: true },
+  },
+  {
+    key: "frac-burning",
+    title: "Burning Ship",
+    mode: "frac",
+    hint: "取绝对值再平方：船身与火焰触手",
+    view: [-0.5, -0.35, 220],
+    frac: { kind: "burning", maxIter: 220, colormap: "hot", smooth: true },
+  },
+  /* ---------------------------------------------------------- 力学 */
+  {
+    key: "mech-projectile",
+    title: "抛体与斜碰",
+    mode: "mech",
+    hint: "三球不同初速落进场地，拖住球甩动后松手即可抛出",
+    mech: {
+      balls: [
+        { id: "m1", x: -9, y: 6, vx: 8, vy: 4, r: 0.5, m: 1, color: paletteAt(0) },
+        { id: "m2", x: -9, y: 2, vx: 12, vy: 7, r: 0.65, m: 2.2, color: paletteAt(1) },
+        { id: "m3", x: 8, y: 7.5, vx: -6, vy: 0, r: 0.4, m: 0.6, color: paletteAt(2) },
+      ],
+      gravity: 9.8,
+      restitution: 0.82,
+      drag: 0.05,
+      speed: 1,
+      trails: true,
+      showVectors: true,
+      running: false,
+    },
+  },
+  {
+    key: "mech-newton",
+    title: "牛顿摆（近弹性对撞）",
+    mode: "mech",
+    hint: "g = 0、e ≈ 1 的无重力对撞：动量与动能守恒看得见",
+    mech: {
+      balls: [
+        { id: "m1", x: -10, y: 0, vx: 6, vy: 0, r: 0.5, m: 1, color: paletteAt(0) },
+        { id: "m2", x: -5, y: 0.5, vx: 0, vy: 0, r: 0.5, m: 1, color: paletteAt(1) },
+        { id: "m3", x: 0, y: -0.5, vx: 0, vy: 0, r: 0.5, m: 1, color: paletteAt(2) },
+        { id: "m4", x: 5, y: 0.2, vx: 0, vy: 0, r: 0.5, m: 1, color: paletteAt(3) },
+      ],
+      gravity: 0,
+      restitution: 1,
+      drag: 0,
+      speed: 1,
+      trails: false,
+      showVectors: true,
+      running: false,
+    },
+  },
+  {
+    key: "mech-bouncy",
+    title: "弹性沙盘",
+    mode: "mech",
+    hint: "高恢复系数 + 多球：开轨迹看能量衰减的螺旋",
+    mech: {
+      balls: [
+        { id: "m1", x: -6, y: 7, vx: 3, vy: 0, r: 0.45, m: 1, color: paletteAt(0) },
+        { id: "m2", x: -2, y: 8, vx: -2, vy: 1, r: 0.45, m: 1, color: paletteAt(1) },
+        { id: "m3", x: 2, y: 6.5, vx: 1, vy: 2, r: 0.45, m: 1, color: paletteAt(2) },
+        { id: "m4", x: 6, y: 7.5, vx: -3, vy: -1, r: 0.45, m: 1, color: paletteAt(3) },
+        { id: "m5", x: 0, y: 4, vx: 0, vy: 3, r: 0.45, m: 1, color: paletteAt(4) },
+      ],
+      gravity: 9.8,
+      restitution: 0.95,
+      drag: 0.02,
+      speed: 1,
+      trails: true,
+      showVectors: false,
+      running: false,
+    },
+  },
 ];
 
 /** 应用预设：把示例写回 store，并按需重建几何文档 */
@@ -742,6 +874,19 @@ export function applyPreset(key: string): void {
     geo = { ...st.geo, doc, pending: [], selected: null };
   }
 
+  let life: LifeState | undefined;
+  if (p.life) {
+    const { seed, ...cfg } = p.life;
+    if (seed) applySeed(seed);
+    life = { ...st.life, ...cfg, running: false };
+  }
+
+  let mech: MechState | undefined;
+  if (p.mech) {
+    mech = { ...st.mech, ...p.mech, running: false };
+    mechWorld.resetFrom(mech.balls);
+  }
+
   st.patch({
     mode: p.mode,
     layers: layers ?? st.layers,
@@ -756,6 +901,9 @@ export function applyPreset(key: string): void {
       ? { ...st.nn, ...p.nn, model: null, data: null, running: false, epochs: 0, loss: 0, acc: 0, curve: [] }
       : st.nn,
     surf: p.surf ? { ...st.surf, ...p.surf } : st.surf,
+    life: life ?? st.life,
+    frac: p.frac ? { ...st.frac, ...p.frac } : st.frac,
+    mech: mech ?? st.mech,
     geo: geo ?? st.geo,
     revision: st.revision + 1,
   });

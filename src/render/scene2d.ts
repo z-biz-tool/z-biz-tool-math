@@ -63,6 +63,9 @@ import type { C2, Mat } from "../core/linalg.ts";
 import { parseMatrix, parseVector } from "../core/parsemat.ts";
 import { CLASS_COLORS, decisionRaster, decisionRow, makeCache, predictMargin } from "../core/nn.ts";
 import type { Cache, Model } from "../core/nn.ts";
+import { world } from "../core/life.ts";
+import { escapeText, fracRow } from "../core/fractal.ts";
+import { MECH_BOUNDS, mechWorld } from "../core/mech.ts";
 import * as P from "./plot2d.ts";
 
 const TAU = Math.PI * 2;
@@ -479,7 +482,14 @@ export function globalsSig(eng: Engine): string {
 }
 
 /** 一帧画不完、要跨帧逐行续算的栅格来自哪套采样器 */
-type RasterSource = "cplx" | "nn";
+type RasterSource = "cplx" | "nn" | "frac";
+
+/** 分形全质量档：每 2 物理像素一采样（dpr 2 时恰好 CSS 像素级） */
+const FRAC_FULL_STEP = 2;
+/** 分形交互档 */
+const FRAC_DRAFT_STEP = 12;
+/** 分形交互中的迭代上限 */
+const FRAC_DRAFT_ITER = 48;
 
 /** Newton 全质量迭代上限（降质档另有 DRAFT_NEWTON_ITER） */
 const NEWTON_FULL_ITER = 64;
@@ -518,6 +528,7 @@ function isRasterMode(mode: string): boolean {
 function rasterSource(s: GeoLabState): RasterSource | null {
   if (s.mode === "nn") return s.nn.model && s.nn.data && s.nn.showBoundary ? "nn" : null;
   if (s.mode === "complex" && isRasterMode(s.cplx.mode)) return "cplx";
+  if (s.mode === "frac") return "frac";
   return null;
 }
 
@@ -532,6 +543,10 @@ function nnStep(nn: NnState, pw: number, draft: boolean): number {
   return draft ? base * 3 : base;
 }
 
+function fracStep(draft: boolean): number {
+  return draft ? FRAC_DRAFT_STEP : FRAC_FULL_STEP;
+}
+
 /** 本帧栅格的采样几何：像素步长与行列数 */
 function rasterGeom(
   s: GeoLabState,
@@ -542,6 +557,10 @@ function rasterGeom(
 ): { step: number; w: number; h: number } {
   if (src === "cplx") {
     const step = gridStep(s.cplx, draft);
+    return { step, w: gridDim(pw, step), h: gridDim(ph, step) };
+  }
+  if (src === "frac") {
+    const step = fracStep(draft);
     return { step, w: gridDim(pw, step), h: gridDim(ph, step) };
   }
   const step = nnStep(s.nn, pw, draft);
@@ -561,6 +580,7 @@ function rasterKey(s: GeoLabState, src: RasterSource, vp: Viewport, step: number
     const model = n.model ? `${n.model.act}:${n.model.sizes.join("x")}` : "-";
     return ["nn", n.dataset, n.samples, n.seed, n.epochs, model, ...geom, s.settings.dark ? 1 : 0].join("\u0000");
   }
+  if (src === "frac") return [fracBasis(s), ...geom].join("\u0000");
   return [cplxBasis(s), ...geom].join("\u0000");
 }
 
@@ -581,6 +601,37 @@ function cplxBasis(s: GeoLabState): string {
     globalsSig(s.engine),
     s.settings.dark ? 1 : 0,
   ].join("\u0000");
+}
+
+/** 分形采样的设置指纹：kind/Julia 参数/迭代上限/色标/平滑/明暗 */
+function fracBasis(s: GeoLabState): string {
+  const f = s.frac;
+  return ["frac", f.kind, f.cr, f.ci, f.maxIter, f.colormap, f.smooth ? 1 : 0, s.settings.dark ? 1 : 0].join("\u0000");
+}
+
+/** 交互期间能不能沿用上一次全质量采样（分形自用一份缓存，与共形着色互不冒领） */
+let fracShot: {
+  basis: string;
+  buf: Uint8ClampedArray;
+  tile: HTMLCanvasElement;
+  world: [number, number, number, number];
+} | null = null;
+
+function shotOfFrac(s: GeoLabState): typeof fracShot {
+  return fracShot && fracShot.basis === fracBasis(s) ? fracShot : null;
+}
+
+function keepFracShot(
+  s: GeoLabState,
+  rgb: Uint8ClampedArray,
+  w: number,
+  h: number,
+  world: [number, number, number, number],
+): void {
+  const basis = fracBasis(s);
+  if (fracShot && fracShot.buf === rgb && fracShot.basis === basis) return;
+  const tile = rasterTile(rgb, w, h);
+  fracShot = tile ? { basis, buf: rgb, tile, world } : null;
 }
 
 /** 交互期间能不能沿用上一次全质量采样（Newton 与共形着色共用这份缓存） */
@@ -610,7 +661,7 @@ export function rasterJobFor(s: GeoLabState, pw: number, ph: number): RasterJob 
   const job: RasterJob = {
     key: rasterKey(s, src, vp, step, w, h),
     source: src,
-    mode: src === "cplx" ? s.cplx.mode : "boundary",
+    mode: src === "cplx" ? s.cplx.mode : src === "frac" ? "frac" : "boundary",
     step,
     w,
     h,
@@ -626,6 +677,7 @@ export function rasterJobFor(s: GeoLabState, pw: number, ph: number): RasterJob 
     job.cache = makeCache(s.nn.model);
     return job;
   }
+  if (src === "frac") return job;
   const c = s.cplx;
   const f = cfn(s.engine, c.f);
   if (!f) return null;
@@ -656,6 +708,31 @@ export function stepRasterJob(s: GeoLabState, job: RasterJob, budgetMs: number):
     if (!m || !cache) return "stale";
     while (job.rows < job.h) {
       decisionRow(m, left, right, top + dy * job.rows, job.w, dark, job.rgb, job.rows * job.w * 3, cache);
+      job.rows++;
+      if (performance.now() - t0 >= budgetMs) return "more";
+    }
+    return "done";
+  }
+  if (job.source === "frac") {
+    const c = s.frac;
+    while (job.rows < job.h) {
+      fracRow(
+        {
+          kind: c.kind,
+          cr: c.cr,
+          ci: c.ci,
+          maxIter: c.maxIter,
+          colormap: c.colormap,
+          smooth: c.smooth,
+          dark,
+          left,
+          right,
+          y: top + dy * job.rows,
+          w: job.w,
+        },
+        job.rgb,
+        job.rows * job.w * 3,
+      );
       job.rows++;
       if (performance.now() - t0 >= budgetMs) return "more";
     }
@@ -1548,12 +1625,159 @@ function clipToBox(
 
 /* ================================================================= 入口 */
 
+/* ------------------------------------------------------------ 生命游戏 */
+
+function drawLifeMode(p: P.Paper, s: GeoLabState, out: SceneOut): void {
+  const ctx = p.ctx;
+  const vp = p.vp;
+  const dark = s.settings.dark;
+  /** 世界边界内淡色衬底，边界外露出正常坐标网格，一眼分清世界有多大 */
+  const [gx0, gy1] = P.vpScreen(p, 0, world.h);
+  const [gx1, gy0] = P.vpScreen(p, world.w, 0);
+  ctx.save();
+  ctx.fillStyle = dark ? "rgba(148, 163, 184, 0.07)" : "rgba(100, 116, 139, 0.08)";
+  ctx.fillRect(gx0, gy1, gx1 - gx0, gy0 - gy1);
+  ctx.restore();
+
+  /** 只遍历视口盖住的格子：拉远时最多全图 8.6 万格，拉近时往往几十格 */
+  const x0 = Math.max(0, Math.floor(vp.left));
+  const x1 = Math.min(world.w - 1, Math.ceil(vp.right));
+  const y0 = Math.max(0, Math.floor(vp.bottom));
+  const y1 = Math.min(world.h - 1, Math.ceil(vp.top));
+  const cell = vp.scale;
+  const [ax, ay] = P.vpScreen(p, x0, y1 + 1);
+  ctx.fillStyle = dark ? "#93b4ff" : "#4152d6";
+  for (let y = y0; y <= y1; y++) {
+    const row = y * world.w;
+    const sy = ay + (y1 - y) * cell;
+    for (let x = x0; x <= x1; x++) {
+      if (world.cells[row + x]) ctx.fillRect(ax + (x - x0) * cell, sy, cell, cell);
+    }
+  }
+  if (s.life.showGrid && cell >= 5) {
+    ctx.save();
+    ctx.strokeStyle = dark ? "rgba(148, 163, 184, 0.16)" : "rgba(71, 85, 105, 0.18)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = x0; x <= x1 + 1; x++) {
+      const sx = Math.round(ax + (x - x0) * cell) + 0.5;
+      ctx.moveTo(sx, Math.max(gy1, ay));
+      ctx.lineTo(sx, Math.min(gy0, ay + (y1 - y0 + 1) * cell));
+    }
+    for (let y = y0; y <= y1 + 1; y++) {
+      const sy = Math.round(ay + (y1 - y + 1) * cell) + 0.5;
+      ctx.moveTo(Math.max(gx0, ax), sy);
+      ctx.lineTo(Math.min(gx1, ax + (x1 - x0 + 1) * cell), sy);
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.save();
+  ctx.strokeStyle = dark ? "rgba(148, 163, 184, 0.5)" : "rgba(71, 85, 105, 0.55)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(gx0, gy1, gx1 - gx0, gy0 - gy1);
+  ctx.restore();
+  out.info.push(`世代 ${world.gen} · 存活 ${world.population} · 世界 ${world.w}×${world.h}`);
+}
+
+/* ------------------------------------------------------------ 分形 */
+
+function drawFractalMode(p: P.Paper, s: GeoLabState, out: SceneOut, draft: boolean, job?: RasterJob | null): void {
+  const { vp } = p;
+  const c = s.frac;
+  const step = fracStep(draft);
+  const w = gridDim(p.w, step);
+  const h = gridDim(p.h, step);
+  const world: [number, number, number, number] = [vp.left, vp.right, vp.bottom, vp.top];
+  const ready = readyJob(job, rasterKey(s, "frac", vp, step, w, h)) ? job : null;
+  const shot = draft ? shotOfFrac(s) : null;
+  if (shot) {
+    /* 交互中把上一次全质量图按当前视口映射贴回，位置仍精确 */
+    P.blitCanvas(p, shot.tile, shot.world, 1, s.settings.antialias);
+    P.drawFrame(p, { minor: false });
+    out.info.push("交互中沿用上一次采样");
+    return;
+  }
+  let rgb: Uint8ClampedArray;
+  if (ready) {
+    rgb = ready.rgb;
+  } else {
+    rgb = new Uint8ClampedArray(w * h * 3);
+    const maxIter = draft ? Math.min(c.maxIter, FRAC_DRAFT_ITER) : c.maxIter;
+    const dy = (vp.top - vp.bottom) / (h - 1);
+    for (let r = 0; r < h; r++) {
+      fracRow(
+        {
+          kind: c.kind,
+          cr: c.cr,
+          ci: c.ci,
+          maxIter,
+          colormap: c.colormap,
+          smooth: c.smooth,
+          dark: s.settings.dark,
+          left: vp.left,
+          right: vp.right,
+          y: vp.top - dy * r,
+          w,
+        },
+        rgb,
+        r * w * 3,
+      );
+    }
+  }
+  P.blitPixels(p, rgb, w, h, world, 1, s.settings.antialias);
+  P.drawFrame(p, { minor: false });
+  const label = c.kind === "julia" ? `Julia (c = ${show3(c.cr)}${c.ci >= 0 ? " + " : " − "}${show3(Math.abs(c.ci))}i)` : c.kind === "burning" ? "Burning Ship" : "Mandelbrot";
+  out.info.push(`${label} · maxIter ${c.maxIter}${draft ? " · 降质档" : ""}`);
+  if (!draft) keepFracShot(s, rgb, w, h, world);
+}
+
+/* ------------------------------------------------------------ 力学 */
+
+function drawMechMode(p: P.Paper, s: GeoLabState, out: SceneOut): void {
+  const { vp, dark } = p;
+  const ctx = p.ctx;
+  const B = MECH_BOUNDS;
+  // 轨迹：世界坐标历史按当前视口映射
+  if (s.mech.trails) {
+    for (const b of mechWorld.balls) {
+      if (b.trail.length < 4) continue;
+      const pts: number[][] = [];
+      for (let i = 0; i < b.trail.length; i += 2) pts.push(P.vpScreen(p, b.trail[i], b.trail[i + 1]));
+      P.strokePolyline(p, pts, { color: b.color, width: 1.4, alpha: 0.4 });
+    }
+  }
+  // 运动场边框
+  const [ax, ay] = P.vpScreen(p, B.left, B.top);
+  const [bx, by] = P.vpScreen(p, B.right, B.bottom);
+  ctx.save();
+  ctx.strokeStyle = dark ? "rgba(148, 163, 184, 0.55)" : "rgba(71, 85, 105, 0.6)";
+  ctx.lineWidth = 1.4;
+  ctx.strokeRect(ax, ay, bx - ax, by - ay);
+  ctx.restore();
+  // 球与速度箭头
+  for (const b of mechWorld.balls) {
+    if (s.mech.showVectors) {
+      P.drawArrow(p, b.x, b.y, b.x + b.vx * 0.18, b.y + b.vy * 0.18, { color: b.color, width: 1.8 });
+    }
+    P.drawPoint(p, b.x, b.y, {
+      color: b.color,
+      r: Math.max(3.5, b.r * vp.scale),
+      label: b.id === mechWorld.grabbedId ? "拖拽中" : "",
+      halo: b.id === mechWorld.grabbedId,
+    });
+  }
+  out.info.push(
+    `t = ${mechWorld.t.toFixed(1)}s · ${mechWorld.balls.length} 球 · 动能 ${mechWorld.kinetic().toFixed(1)}`,
+  );
+}
+
 export function drawScene2D(p: P.Paper, s: GeoLabState, opt: SceneOpt = {}): SceneOut {
   const out: SceneOut = { errors: [], info: [] };
   P.begin(p, s.settings.dark);
   /* 复平面、神经网络画的是不透明栅格，坐标轴必须后画才不会被盖掉；
      线性映射的轴标恒为整数（π 刻度会把轴换成 π/2，与它画的整数格线对不上） */
-  const frameFirst = s.mode !== "complex" && s.mode !== "nn" && s.mode !== "lin";
+  const frameFirst = s.mode !== "complex" && s.mode !== "nn" && s.mode !== "lin" && s.mode !== "frac";
   if (frameFirst) {
     if (
       s.mode === "func" &&
@@ -1589,6 +1813,15 @@ export function drawScene2D(p: P.Paper, s: GeoLabState, opt: SceneOpt = {}): Sce
       break;
     case "geom":
       drawGeoMode(p, s, out);
+      break;
+    case "life":
+      drawLifeMode(p, s, out);
+      break;
+    case "frac":
+      drawFractalMode(p, s, out, !!opt.draft, opt.raster);
+      break;
+    case "mech":
+      drawMechMode(p, s, out);
       break;
     default:
       P.drawFrame(p, { minor: s.settings.showMinorGrid });
@@ -1658,6 +1891,40 @@ export function probe(
         return { lines: [`(x, y) = (${show3(x)}, ${show3(y)})`, `F = (${show3(fu.at(x, y))}, ${show3(fv.at(x, y))})`], snap: null };
       const df = fn(s.engine, s.vec.dfxy, 2, out);
       if (df) return { lines: [`(x, y) = (${show3(x)}, ${show3(y)})`, `y' = ${show3(df.at(x, y))}`], snap: null };
+    }
+    if (s.mode === "life") {
+      const cx = Math.floor(x);
+      const cy = Math.floor(y);
+      const state = world.inGrid(cx, cy) ? (world.get(cx, cy) ? "存活" : "死亡") : "世界外";
+      return {
+        lines: [
+          `格子 (${cx}, ${cy}) · ${state}`,
+          `世代 ${world.gen} · 存活 ${world.population} · 规则 ${s.life.rule}`,
+        ],
+        snap: null,
+      };
+    }
+    if (s.mode === "frac") {
+      const f = s.frac;
+      return {
+        lines: [
+          `z = ${show3(x)}${y >= 0 ? " + " : " − "}${show3(Math.abs(y))}i`,
+          escapeText(f.kind, x, y, f.cr, f.ci, f.maxIter),
+        ],
+        snap: null,
+      };
+    }
+    if (s.mode === "mech") {
+      const hit = mechWorld.balls.find((b) => Math.hypot(x - b.x, y - b.y) <= b.r + 0.3);
+      if (hit) {
+        return {
+          lines: [
+            `球 ${hit.id} · r = ${show3(hit.r)} · m = ${show3(hit.m)}`,
+            `位置 (${show3(hit.x)}, ${show3(hit.y)}) · 速度 (${show3(hit.vx)}, ${show3(hit.vy)})`,
+          ],
+          snap: null,
+        };
+      }
     }
     if (s.mode === "geom" && s.geo.doc) {
       const doc = s.geo.doc;

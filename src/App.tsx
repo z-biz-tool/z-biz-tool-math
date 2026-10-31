@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, ConfigProvider, Modal, Popover, Segmented, Select, Switch, Tooltip, App as AntdApp, theme as antdTheme } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import {
+  AppstoreOutlined,
   DownloadOutlined,
   EnvironmentOutlined,
   FileImageOutlined,
@@ -13,6 +14,8 @@ import {
   GlobalOutlined,
   LineChartOutlined,
   ClusterOutlined,
+  ExperimentOutlined,
+  PartitionOutlined,
   SettingOutlined,
   TableOutlined,
   ThunderboltOutlined,
@@ -20,6 +23,8 @@ import {
 } from "@ant-design/icons";
 import { PRESETS, applyPreset } from "./presets.ts";
 import { useStore, type Mode } from "./state.ts";
+import { ruleOf, world } from "./core/life.ts";
+import { mechWorld } from "./core/mech.ts";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { startDeepLinkReceiver, ZBIZ_TAKE_PENDING } from "z-biz-tool-shared/protocol";
@@ -39,8 +44,14 @@ const MODES: { value: Mode; label: string; icon: React.ReactNode }[] = [
   { value: "lin", label: "矩阵与线性", icon: <TableOutlined /> },
   { value: "nn", label: "神经网络", icon: <ClusterOutlined /> },
   { value: "surf", label: "三维曲面", icon: <ThunderboltOutlined /> },
+  { value: "life", label: "生命游戏", icon: <AppstoreOutlined /> },
+  { value: "frac", label: "分形", icon: <PartitionOutlined /> },
+  { value: "mech", label: "力学", icon: <ExperimentOutlined /> },
   { value: "console", label: "控制台", icon: <SettingOutlined /> },
 ];
+
+/** ⌘1…⌘8 的固定映射：新模式插进来也不能动老用户的肌肉记忆 */
+const DIGIT_MODES: Mode[] = ["func", "geom", "complex", "vector", "lin", "nn", "surf", "console"];
 
 /* 会话快照：复用工程 JSON 的格式与校验（Project.v 已是版本标记），不另起一套形状 */
 const SESSION_KEY = "z-biz-tool-math-session";
@@ -48,7 +59,7 @@ const SESSION_KEY = "z-biz-tool-math-session";
 let sessionRestored = false;
 
 const PRESET_GROUPS: { label: string; options: { value: string; label: string }[] }[] = (
-  ["func", "geom", "complex", "vector", "lin", "nn", "surf"] as Mode[]
+  ["func", "geom", "complex", "vector", "lin", "nn", "surf", "life", "frac", "mech"] as Mode[]
 ).map((m) => ({
   label: MODES.find((q) => q.value === m)?.label ?? m,
   options: PRESETS.filter((p) => p.mode === m).map((p) => ({ value: p.key, label: `${p.title}｜${p.hint}` })),
@@ -180,6 +191,11 @@ export default function App() {
     for (const p of st.params) st.engine.setNum(p.name, p.value);
   }, []);
 
+  /** 力学世界单例落位：模块加载是空的，等会话/工程回填后再按 store 初值铺球 */
+  useEffect(() => {
+    if (mechWorld.balls.length === 0) mechWorld.resetFrom(useStore.getState().mech.balls);
+  }, []);
+
   /** 参数动画：正弦往复，起始相位对齐当前值，按下播放不会跳变 */
   const animating = useStore((s) => s.params.some((p) => p.animate));
   useEffect(() => {
@@ -216,6 +232,57 @@ export default function App() {
     return () => cancelAnimationFrame(raf);
   }, [animating]);
 
+  /** 生命游戏运行循环：App 常驻，模式切走世界照常演化；步进按速度节流，一帧至多追几步 */
+  const lifeRunning = useStore((s) => s.life.running);
+  useEffect(() => {
+    if (!lifeRunning) return;
+    let raf = 0;
+    let last = performance.now();
+    let acc = 0;
+    const tick = (now: number) => {
+      const dt = Math.min(0.25, (now - last) / 1000);
+      last = now;
+      const st = useStore.getState();
+      const rule = ruleOf(st.life.rule);
+      const period = 1 / Math.max(1, st.life.speed);
+      acc += dt;
+      let did = 0;
+      while (rule && acc >= period) {
+        world.step(rule);
+        acc -= period;
+        did++;
+        // 长时间掉帧（如切后台回来）不补课：把积压直接丢掉
+        if (acc > period * 6) acc = 0;
+      }
+      if (did) st.bump();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [lifeRunning]);
+
+  /** 力学运行循环：积分在世界单例里，rAF 只负责按时间倍率推进并触发重绘 */
+  const mechRunning = useStore((s) => s.mech.running);
+  useEffect(() => {
+    if (!mechRunning) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.min(0.06, (now - last) / 1000);
+      last = now;
+      const st = useStore.getState();
+      mechWorld.step(Math.min(0.05, dt * Math.max(0.1, st.mech.speed)), {
+        gravity: st.mech.gravity,
+        restitution: st.mech.restitution,
+        drag: st.mech.drag,
+      });
+      st.bump();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [mechRunning]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const st = useStore.getState();
@@ -228,7 +295,7 @@ export default function App() {
         const digit = "12345678".indexOf(e.key);
         if (digit >= 0 && !e.shiftKey && !e.altKey) {
           e.preventDefault();
-          setMode(MODES[digit].value);
+          setMode(DIGIT_MODES[digit]);
           return;
         }
         if (k === "z") {

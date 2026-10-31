@@ -24,6 +24,9 @@ import { createModel, dataset as sampleDataset, makeCache, makeGrad, rng, trainE
 import type { Act, Cache, Dataset, DatasetName, GradPack, Model } from "../core/nn.ts";
 import { evalString, show } from "../core/machine.ts";
 import { parseMatrix, parseVector } from "../core/parsemat.ts";
+import { RULE_PRESETS, applySeed, ruleOf, world } from "../core/life.ts";
+import { FRACTAL_KINDS } from "../core/fractal.ts";
+import { defaultBallSpec, mechWorld } from "../core/mech.ts";
 import { clearSurfCache } from "../render/scene3d.ts";
 import { kindZh, toolZh } from "../render/scene2d.ts";
 import { useStore, uid } from "../state.ts";
@@ -1289,6 +1292,261 @@ function NnPanel() {
   );
 }
 
+/* ------------------------------------------------------------ 生命游戏 */
+
+const LIFE_TOOLS: { value: "draw" | "erase" | "pan"; label: string }[] = [
+  { value: "draw", label: "画笔" },
+  { value: "erase", label: "橡皮" },
+  { value: "pan", label: "拖动" },
+];
+
+function LifePanel() {
+  const life = useStore((s) => s.life);
+  const setLife = useStore((s) => s.setLife);
+  const rev = useStore((s) => s.revision);
+  const [density, setDensity] = useState(0.28);
+  /** 读数来自模块单例 world，靠 revision 逐帧刷新；gen/pop 现读 */
+  void rev;
+  const rule = ruleOf(life.rule);
+  return (
+    <div className="gl-panel">
+      <Card title="演化">
+        <Row>
+          <Button
+            size="small"
+            type="primary"
+            className="gl-grow"
+            icon={life.running ? <PauseOutlined /> : <PlayCircleOutlined />}
+            onClick={() => setLife({ running: !life.running })}
+          >
+            {life.running ? "暂停" : "演化"}
+          </Button>
+          <Button
+            size="small"
+            disabled={life.running}
+            onClick={() => {
+              const r = ruleOf(useStore.getState().life.rule);
+              if (r) world.step(r);
+              useStore.getState().bump();
+            }}
+          >
+            单步
+          </Button>
+        </Row>
+        <Row>
+          <Button size="small" className="gl-grow" onClick={() => { world.clear(); useStore.getState().bump(); }}>
+            清空
+          </Button>
+          <Button
+            size="small"
+            className="gl-grow"
+            onClick={() => {
+              applySeed({ kind: "random", density });
+              useStore.getState().bump();
+            }}
+          >
+            随机撒种
+          </Button>
+        </Row>
+        <Slide label="撒种密度" value={density} min={0.05} max={0.6} step={0.01} onChange={setDensity} />
+        <Slide
+          label={life.running ? `速度 ${life.speed} 步/秒` : "速度"}
+          value={life.speed}
+          min={1}
+          max={60}
+          step={1}
+          onChange={(v) => setLife({ speed: v })}
+        />
+        <Stat k="世代" v={String(world.gen)} />
+        <Stat k="存活" v={String(world.population)} />
+      </Card>
+      <Card title="规则（B/S 记法）">
+        <Select
+          size="small"
+          value={RULE_PRESETS.some((r) => r.value === life.rule) ? life.rule : undefined}
+          placeholder={life.rule}
+          options={RULE_PRESETS}
+          onChange={(v) => setLife({ rule: v })}
+        />
+        <Input
+          size="small"
+          style={exprStyle}
+          value={life.rule}
+          aria-label="自定义规则"
+          onChange={(e) => setLife({ rule: e.target.value })}
+        />
+        {!rule && <ErrNote msg="规则不合法，格式如 B3/S23；演化沿用上一条合法规则。" />}
+        <HintNote>B = 出生邻居数，S = 存活邻居数。换规则立即生效，下一代按新规则计算。</HintNote>
+      </Card>
+      <Card title="画笔与世界">
+        <Segmented
+          size="small"
+          block
+          value={life.tool}
+          options={LIFE_TOOLS}
+          onChange={(v) => setLife({ tool: v as typeof life.tool })}
+        />
+        <Toggle label="格子线（放大可见）" on={life.showGrid} onChange={(v) => setLife({ showGrid: v })} />
+        <Row>
+          <Button size="small" className="gl-grow" onClick={() => { applySeed({ kind: "gun" }); useStore.getState().bump(); }}>
+            滑翔机枪
+          </Button>
+          <Button size="small" className="gl-grow" onClick={() => { applySeed({ kind: "rpentomino" }); useStore.getState().bump(); }}>
+            R-五连块
+          </Button>
+          <Button size="small" className="gl-grow" onClick={() => { applySeed({ kind: "acorn" }); useStore.getState().bump(); }}>
+            橡果
+          </Button>
+        </Row>
+        <HintNote>
+          世界是一块 360×240 的环形方格（边界环绕）。画笔拖动落子；想平移视图切「拖动」工具，滚轮缩放照旧。
+          世界布局不进工程文件——保存工程带走的是规则与速度配置。
+        </HintNote>
+      </Card>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ 分形 */
+
+function FracPanel() {
+  const f = useStore((s) => s.frac);
+  const set = (p: Partial<typeof f>) => useStore.getState().setFrac(p);
+  return (
+    <div className="gl-panel">
+      <Card title="迭代式">
+        <Segmented
+          size="small"
+          block
+          value={f.kind}
+          options={FRACTAL_KINDS}
+          onChange={(v) => set({ kind: v as typeof f.kind })}
+        />
+        {f.kind === "julia" && (
+          <>
+            <Slide label="c 的实部 cr" value={f.cr} min={-1.2} max={1.2} step={0.005} onChange={(v) => set({ cr: v })} />
+            <Slide label="c 的虚部 ci" value={f.ci} min={-1.2} max={1.2} step={0.005} onChange={(v) => set({ ci: v })} />
+            <HintNote>
+              Julia 集是「对固定的 c，把平面上每点拿来迭代」的結果；c 落在 Mandelbrot 集内 ⇒ Julia 连通。
+              拖动 c 观察形状裂变，Mandelbrot 模式就是这张 c 参数图的目录。
+            </HintNote>
+          </>
+        )}
+        {f.kind === "burning" && <HintNote>每步先取 |Re z|、|Im z| 再平方：zeppelin 船身与火焰触手都来自这两个绝对值。</HintNote>}
+        {f.kind === "mandelbrot" && <HintNote>滚轮往 Seahorse Valley（约 −0.75+0.1i）与 Elephant Valley（约 0.275）里钻，边界无限细节。</HintNote>}
+      </Card>
+      <Card title="着色">
+        <Slide label="迭代上限 maxIter" value={f.maxIter} min={40} max={800} step={20} onChange={(v) => set({ maxIter: v })} />
+        <Row>
+          <span style={{ fontSize: 11.5, width: 56 }}>色标</span>
+          <Select
+            size="small"
+            className="gl-grow"
+            value={f.colormap}
+            options={COLORMAPS.map((n) => ({ value: n, label: n }))}
+            onChange={(v) => set({ colormap: v })}
+          />
+        </Row>
+        <Toggle label="平滑着色（连续迭代数）" on={f.smooth} onChange={(v) => set({ smooth: v })} />
+        <HintNote>
+          放大越深需要的迭代上限越高，不然边界外一圈会糊成「未逃逸」。改任何设置都触发重采样：交互中先出降质档，停手后逐带回补锐利图。
+        </HintNote>
+      </Card>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------ 力学 */
+
+function MechPanel() {
+  const mech = useStore((s) => s.mech);
+  const setMech = useStore((s) => s.setMech);
+  const rev = useStore((s) => s.revision);
+  void rev;
+  const updBall = (id: string, patch: Partial<{ x: number; y: number; vx: number; vy: number; r: number; m: number; color: string }>) => {
+    const st = useStore.getState();
+    st.setMech({ balls: st.mech.balls.map((b) => (b.id === id ? { ...b, ...patch } : b)) });
+    mechWorld.updateSpec(id, patch);
+  };
+  const askRemove = (id: string) => {
+    const st = useStore.getState();
+    st.setMech({ balls: st.mech.balls.filter((b) => b.id !== id) });
+    mechWorld.remove(id);
+  };
+  const addBall = () => {
+    const st = useStore.getState();
+    const spec = defaultBallSpec(st.mech.balls.length);
+    st.setMech({ balls: [...st.mech.balls, spec] });
+    mechWorld.add(spec);
+  };
+  const reset = () => {
+    mechWorld.resetFrom(useStore.getState().mech.balls);
+    useStore.getState().bump();
+  };
+  return (
+    <div className="gl-panel">
+      <Card title="演化">
+        <Row>
+          <Button
+            size="small"
+            type="primary"
+            className="gl-grow"
+            icon={mech.running ? <PauseOutlined /> : <PlayCircleOutlined />}
+            onClick={() => setMech({ running: !mech.running })}
+          >
+            {mech.running ? "暂停" : "运行"}
+          </Button>
+          <Button size="small" onClick={reset}>
+            重置
+          </Button>
+        </Row>
+        <Slide label="时间倍率" value={mech.speed} min={0.1} max={3} step={0.05} onChange={(v) => setMech({ speed: v })} />
+        <Toggle label="轨迹" on={mech.trails} onChange={(v) => setMech({ trails: v })} />
+        <Toggle label="速度箭头" on={mech.showVectors} onChange={(v) => setMech({ showVectors: v })} />
+        <Stat k="时间" v={`${mechWorld.t.toFixed(1)} s`} />
+        <Stat k="总动能" v={mechWorld.kinetic().toFixed(2)} />
+      </Card>
+      <Card title="场">
+        <Slide label="重力 g" value={mech.gravity} min={0} max={25} step={0.1} onChange={(v) => setMech({ gravity: v })} />
+        <Slide label="恢复系数 e" value={mech.restitution} min={0} max={1} step={0.01} onChange={(v) => setMech({ restitution: v })} />
+        <Slide label="空气阻力" value={mech.drag} min={0} max={1} step={0.01} onChange={(v) => setMech({ drag: v })} />
+        <HintNote>
+          e = 1 且阻力为 0 时碰撞完全弹性，总动能守恒；拖低 e 看能量从哪一步开始漏。g = 0 配上对撞初速就是牛顿摆。
+        </HintNote>
+      </Card>
+      <Card title={`球 ${mech.balls.length}`}>
+        {mech.balls.map((b) => (
+          <div key={b.id} className="gl-layer">
+            <Row>
+              <Swatch value={b.color} label={`球 ${b.id} 的颜色`} onChange={(v) => updBall(b.id, { color: v })} />
+              <span className="gl-mono gl-grow" style={{ fontSize: 12 }}>
+                {b.id}
+              </span>
+              <Button size="small" type="text" danger icon={<DeleteOutlined />} aria-label={`删除球 ${b.id}`} onClick={() => askRemove(b.id)} />
+            </Row>
+            <Row>
+              <span style={{ fontSize: 11.5, width: 26 }}>vx</span>
+              <Num value={b.vx} onChange={(v) => updBall(b.id, { vx: v })} step={0.5} />
+              <span style={{ fontSize: 11.5, width: 26 }}>vy</span>
+              <Num value={b.vy} onChange={(v) => updBall(b.id, { vy: v })} step={0.5} />
+            </Row>
+            <Slide label={`半径 ${b.r.toFixed(2)}`} value={b.r} min={0.3} max={2.5} step={0.05} onChange={(v) => updBall(b.id, { r: v })} />
+            <Slide label={`质量 ${b.m.toFixed(2)}`} value={b.m} min={0.2} max={6} step={0.1} onChange={(v) => updBall(b.id, { m: v })} />
+          </div>
+        ))}
+        <Row>
+          <Button size="small" icon={<PlusOutlined />} className="gl-grow" onClick={addBall}>
+            添加球
+          </Button>
+        </Row>
+        <HintNote>
+          画布上直接抓住球拖动，松手即按手势速度抛出；空白处拖动平移，滚轮缩放。vx/vy 改的是当前速度，立即生效。
+        </HintNote>
+      </Card>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------ 曲面模式 */
 
 const SURF_KINDS: { value: SurfKind; label: string }[] = [
@@ -1581,6 +1839,12 @@ export default function SidePanel() {
       return <NnPanel />;
     case "surf":
       return <SurfPanel />;
+    case "life":
+      return <LifePanel />;
+    case "frac":
+      return <FracPanel />;
+    case "mech":
+      return <MechPanel />;
     default:
       return <ConsolePanel />;
   }

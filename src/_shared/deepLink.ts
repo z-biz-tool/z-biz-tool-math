@@ -42,6 +42,9 @@ export const MATH_MODES: readonly Mode[] = [
   "lin",
   "nn",
   "surf",
+  "life",
+  "frac",
+  "mech",
   "console",
 ];
 

@@ -6,8 +6,20 @@ import { paletteAt } from "./core/colormap.ts";
 import { Engine } from "./core/machine.ts";
 import { GeometryDoc } from "./core/geometry.ts";
 import type { Act, Dataset, DatasetName, Model } from "./core/nn.ts";
+import type { MechBallSpec } from "./core/mech.ts";
 
-export type Mode = "func" | "geom" | "complex" | "vector" | "lin" | "nn" | "surf" | "console";
+export type Mode =
+  | "func"
+  | "geom"
+  | "complex"
+  | "vector"
+  | "lin"
+  | "nn"
+  | "surf"
+  | "life"
+  | "frac"
+  | "mech"
+  | "console";
 
 export type LayerKind =
   | "cartesian"
@@ -196,6 +208,43 @@ export interface GeoState {
   grid: boolean;
 }
 
+/** 元胞自动机工作台：世界本体在 core/life.ts 的模块单例里，这里只留配置 */
+export interface LifeState {
+  /** 画笔 / 橡皮 / 拖动 */
+  tool: "draw" | "erase" | "pan";
+  /** B/S 记法，如 B3/S23 */
+  rule: string;
+  running: boolean;
+  /** 每秒步数 */
+  speed: number;
+  showGrid: boolean;
+}
+
+/** 分形工作台：逃逸集的三种迭代式与着色（core/fractal.ts） */
+export interface FractalState {
+  kind: "mandelbrot" | "julia" | "burning";
+  /** Julia 的参数 c = cr + ci·i */
+  cr: number;
+  ci: number;
+  maxIter: number;
+  colormap: string;
+  /** 平滑着色（连续迭代数） */
+  smooth: boolean;
+}
+
+/** 力学工作台：配置与初始布局；球体活态在 core/mech.ts 的模块单例里 */
+export interface MechState {
+  balls: MechBallSpec[];
+  gravity: number;
+  restitution: number;
+  drag: number;
+  running: boolean;
+  /** 时间倍率 */
+  speed: number;
+  trails: boolean;
+  showVectors: boolean;
+}
+
 export interface Settings {
   dark: boolean;
   showMinorGrid: boolean;
@@ -236,6 +285,9 @@ export interface GeoLabState {
   lin: LinState;
   nn: NnState;
   surf: SurfState;
+  life: LifeState;
+  frac: FractalState;
+  mech: MechState;
   console: { lines: ConsoleLine[]; input: string };
   settings: Settings;
   /** 递增以强制重绘（拖动、参数变化等） */
@@ -260,6 +312,9 @@ export interface GeoLabState {
   setLin(p: Partial<LinState>): void;
   setNn(p: Partial<NnState>): void;
   setSurf(p: Partial<SurfState>): void;
+  setLife(p: Partial<LifeState>): void;
+  setFrac(p: Partial<FractalState>): void;
+  setMech(p: Partial<MechState>): void;
 }
 
 let seq = 0;
@@ -267,8 +322,8 @@ export const uid = (p = "o"): string => `${p}${++seq}${Date.now().toString(36).s
 
 const defaultView = (mode: Mode): Viewport =>
   new Viewport({
-    cx: 0,
-    cy: 0,
+    cx: mode === "life" ? 180 : mode === "frac" ? -0.6 : 0,
+    cy: mode === "life" ? 120 : 0,
     scale:
       mode === "geom"
         ? 48
@@ -278,7 +333,13 @@ const defaultView = (mode: Mode): Viewport =>
             ? 88
             : mode === "nn"
               ? 112
-              : 60,
+              : mode === "life"
+                ? 9
+                : mode === "frac"
+                  ? 250
+                  : mode === "mech"
+                    ? 38
+                    : 60,
     width: 900,
     height: 640,
   });
@@ -351,7 +412,19 @@ function readStoredDark(): boolean {
 const UI_PREFS_KEY = "z-biz-tool-math-ui-prefs";
 const UI_PREFS_VERSION = 1;
 
-const MODE_LIST: Mode[] = ["func", "geom", "complex", "vector", "lin", "nn", "surf", "console"];
+const MODE_LIST: Mode[] = [
+  "func",
+  "geom",
+  "complex",
+  "vector",
+  "lin",
+  "nn",
+  "surf",
+  "life",
+  "frac",
+  "mech",
+  "console",
+];
 
 function defaultSettings(): Settings {
   return {
@@ -430,6 +503,9 @@ export const useStore = create<GeoLabState>((set, get) => ({
     lin: defaultView("lin"),
     nn: defaultView("nn"),
     surf: defaultView("surf"),
+    life: defaultView("life"),
+    frac: defaultView("frac"),
+    mech: defaultView("mech"),
     console: defaultView("console"),
   },
   geo: {
@@ -521,6 +597,35 @@ export const useStore = create<GeoLabState>((set, get) => ({
     showAxes: true,
     lightAngle: 0.6,
   },
+  life: {
+    tool: "draw",
+    rule: "B3/S23",
+    running: false,
+    speed: 12,
+    showGrid: true,
+  },
+  frac: {
+    kind: "mandelbrot",
+    cr: -0.8,
+    ci: 0.156,
+    maxIter: 160,
+    colormap: "turbo",
+    smooth: true,
+  },
+  mech: {
+    balls: [
+      { id: "m1", x: -6, y: 4, vx: 6, vy: 5, r: 0.7, m: 1, color: paletteAt(0) },
+      { id: "m2", x: 3, y: -3, vx: -3, vy: 6, r: 1.1, m: 2.5, color: paletteAt(1) },
+      { id: "m3", x: 0, y: 6, vx: -2, vy: 0, r: 0.5, m: 0.6, color: paletteAt(2) },
+    ],
+    gravity: 9.8,
+    restitution: 0.82,
+    drag: 0.05,
+    running: false,
+    speed: 1,
+    trails: true,
+    showVectors: false,
+  },
   console: { lines: [], input: "" },
   settings: { ...uiPrefs.settings, dark: baseSettings.dark },
   revision: 0,
@@ -592,6 +697,9 @@ export const useStore = create<GeoLabState>((set, get) => ({
   setSurf: (p) => set((s) => ({ surf: { ...s.surf, ...p }, revision: s.revision + 1 })),
   setLin: (p) => set((s) => ({ lin: { ...s.lin, ...p }, revision: s.revision + 1 })),
   setNn: (p) => set((s) => ({ nn: { ...s.nn, ...p }, revision: s.revision + 1 })),
+  setLife: (p) => set((s) => ({ life: { ...s.life, ...p }, revision: s.revision + 1 })),
+  setFrac: (p) => set((s) => ({ frac: { ...s.frac, ...p }, revision: s.revision + 1 })),
+  setMech: (p) => set((s) => ({ mech: { ...s.mech, ...p }, revision: s.revision + 1 })),
 }));
 
 /* 主题落盘挂在订阅上：设置面板的开关和「载入工程」是两条独立写路径，只堵一条会漏 */

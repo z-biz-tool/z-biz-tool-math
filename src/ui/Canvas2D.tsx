@@ -15,7 +15,9 @@ import {
   stepRasterJob,
   type RasterJob,
 } from "../render/scene2d.ts";
-import { niceTicks } from "../core/view.ts";
+import { niceTicks, type Viewport } from "../core/view.ts";
+import { world } from "../core/life.ts";
+import { launchVelocity, mechWorld } from "../core/mech.ts";
 import { useStore } from "../state.ts";
 
 interface Size {
@@ -47,7 +49,12 @@ export default function Canvas2D() {
   const over = useRef<HTMLCanvasElement>(null);
   const size = useRef<Size>({ w: 900, h: 620, dpr: 1 });
   const hover = useRef<{ sx: number; sy: number } | null>(null);
-  const drag = useRef<{ type: "pan"; lx: number; ly: number } | { type: "point"; id: string } | null>(null);
+  const drag = useRef<
+    | { type: "pan"; lx: number; ly: number }
+    | { type: "point"; id: string }
+    | { type: "paint" }
+    | { type: "ball"; id: string; samples: { t: number; x: number; y: number }[] }
+  | null>(null);
   const frame = useRef(0);
   const settle = useRef(0);
   const lastAt = useRef(0);
@@ -293,6 +300,26 @@ export default function Canvas2D() {
     const vp = st.views[st.mode];
     const [sx, sy] = localPoint(e);
     (e.target as Element).setPointerCapture?.(e.pointerId);
+    if (st.mode === "mech") {
+      const [wx, wy] = vp.toWorld(sx, sy);
+      const hit = mechWorld.balls.find((b) => Math.hypot(wx - b.x, wy - b.y) <= b.r + 0.35);
+      if (hit) {
+        /** 抓住球：演化循环跳过它，松手时按最后 ~100ms 的位移反推出手速度 */
+        mechWorld.grabbedId = hit.id;
+        mechWorld.place(hit.id, wx, wy);
+        drag.current = { type: "ball", id: hit.id, samples: [{ t: performance.now(), x: wx, y: wy }] };
+        st.bump();
+        setCursor("grabbing");
+        return;
+      }
+    }
+    if (st.mode === "life" && st.life.tool !== "pan") {
+      /** 生命游戏：画笔/橡皮按下即落子，拖动连刷；平移交给「拖动」工具或滚轮缩放 */
+      drag.current = { type: "paint" };
+      paintAt(vp, sx, sy);
+      setCursor("crosshair");
+      return;
+    }
     if (st.mode !== "geom") {
       drag.current = { type: "pan", lx: sx, ly: sy };
       setCursor("grabbing");
@@ -323,11 +350,34 @@ export default function Canvas2D() {
     }
   };
 
+  /** 生命游戏的落子：格子坐标取地板，画笔填活、橡皮填死 */
+  const paintAt = (vp: Viewport, sx: number, sy: number) => {
+    const st = useStore.getState();
+    const [wx, wy] = vp.toWorld(sx, sy);
+    const cx = Math.floor(wx);
+    const cy = Math.floor(wy);
+    if (!world.inGrid(cx, cy)) return;
+    world.set(cx, cy, st.life.tool === "erase" ? 0 : 1);
+    st.bump();
+  };
+
   const onPointerMove = (e: React.PointerEvent) => {
     const [sx, sy] = localPoint(e);
     const st = useStore.getState();
     const vp = st.views[st.mode];
     const d = drag.current;
+    if (d?.type === "ball") {
+      const [wx, wy] = vp.toWorld(sx, sy);
+      mechWorld.place(d.id, wx, wy);
+      d.samples.push({ t: performance.now(), x: wx, y: wy });
+      if (d.samples.length > 8) d.samples.shift();
+      st.bump();
+      return;
+    }
+    if (d?.type === "paint") {
+      paintAt(vp, sx, sy);
+      return;
+    }
     if (d?.type === "pan") {
       st.setView(st.mode, vp.panPixels(sx - d.lx, sy - d.ly));
       drag.current = { type: "pan", lx: sx, ly: sy };
@@ -353,6 +403,16 @@ export default function Canvas2D() {
     const d = drag.current;
     if (d?.type === "point") {
       useStore.getState().geo.doc.endGesture();
+      useStore.getState().bump();
+    }
+    if (d?.type === "ball") {
+      const b = mechWorld.get(d.id);
+      const [vx, vy] = launchVelocity(d.samples);
+      if (b) {
+        b.vx = vx;
+        b.vy = vy;
+      }
+      mechWorld.grabbedId = null;
       useStore.getState().bump();
     }
     drag.current = null;
