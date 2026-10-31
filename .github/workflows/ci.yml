@@ -43,7 +43,7 @@ jobs:
       # clippy 要真编译整个 crate（Linux 上还得先 apt 装 GTK/WebKit），为 12 行模板不值那个 runner 时间；
       # Rust 侧的编译级保证也没丢：打 tag 时 build.yml 会在四个平台上真编一次 Tauri 包。
       - name: Setup Rust (rustfmt)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: rustfmt
 
