@@ -1,23 +1,23 @@
 {
-  "version": "0.2.1",
+  "version": "0.2.2",
   "notes": "See the assets below to download this version.",
-  "pub_date": "2026-10-28T17:08:38Z",
+  "pub_date": "2026-11-16T01:42:22Z",
   "platforms": {
     "darwin-aarch64": {
-      "url": "https://github.com/z-biz-tool/z-biz-tool-math/releases/download/v0.2.1/z-biz-tool-math_aarch64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK2JyZ1MxQzF1bFNNRmdTRGZOdjR5WFFDQkFVMG9EeW5PVElvOXFVcG1EZmpIa1BPYm1TcjlMQUthb2grSjRmenBjTDFJT0YrYjJPTmdpS1VRRHdON0FBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjA3MjkwCWZpbGU6ei1iaXotdG9vbC1tYXRoLmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMQpTa05teVk3UzlpT2pZdkc1eUJPVE43cUcvQjdaZWJ1eTlHclRWdFFMdGRPeS84NTBuRmxrT08rbnhWeWR0TXoxSG82WVRKZnZqdUc2cG9JNmlrSkFBZz09Cg=="
+      "url": "https://github.com/z-biz-tool/z-biz-tool-math/releases/download/v0.2.2/z-biz-tool-math_aarch64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK1haQ0NrQk5qWXUwb0ZCMmtqcEtySndMYmpsSDgrNm54TTFIUEE4eTE1RzU2ZElzaVlXRTB3Q3JPNXpjek1nUU9MWEg4TXlJZXQ4QXRpNGNBZHcxTkFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0NzkzMjY0CWZpbGU6ei1iaXotdG9vbC1tYXRoLmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMgplZ1dYVmllNytFMi8wUm9RZGlKdmdMVEpiSnJldGEyYlFxM0hlM3RGNDBwN3poWEZNWmY0SjM5T0VYVGJVK1lXRGV3ZGNPanAyT25rMDZKcEdzVFZCdz09Cg=="
     },
     "darwin-x86_64": {
-      "url": "https://github.com/z-biz-tool/z-biz-tool-math/releases/download/v0.2.1/z-biz-tool-math_x64.app.tar.gz",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK1lJMWdmQ3RnaVdCTFVqQTlMQythVzdHaDBqeU1pVlJjcjljd25PUU5qWWROU0wwOWRYR0lhU2p0RTRSME5GVmluem5zSmQvaXBGWU0zajh2M1JicUFjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjA2OTc2CWZpbGU6ei1iaXotdG9vbC1tYXRoLmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMQpEMU1KalhzU1JxZmpyUGhHTHladHFSdUZiblBPYWlvTkJKUlB0RUNxdjFIZzhMV29VcFMzRTROM0JHR2pyZXJ6cXFLTEs2SThFcHVac0NERk5xalhEZz09Cg=="
+      "url": "https://github.com/z-biz-tool/z-biz-tool-math/releases/download/v0.2.2/z-biz-tool-math_x64.app.tar.gz",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK2RNeGdnSHFDSElYTjdKdXlCaEhkZ1JLbjFlS1JnNk1Gd211THNjMjdLTE1SVkVEckNDM2tYWWdlLzUvTkp0TnVvSDllTHpoY0w2WllTdnpHSWx3VlFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0NzkzMzIwCWZpbGU6ei1iaXotdG9vbC1tYXRoLmFwcC50YXIuZ3oJdmVyc2lvbjowLjIuMgo5R2ROMUdTYjBCUHVGaE5BZ2VRa1Z5azNld0JhSTlWSlVRZm02dEtBTkUwY2RPWVZHNmlyeXcwdkFuTkEvcHJqbFVCL3NBOFBld1FRN1p3N1oxMUNCdz09Cg=="
     },
     "linux-x86_64": {
-      "url": "https://github.com/z-biz-tool/z-biz-tool-math/releases/download/v0.2.1/z-biz-tool-math_0.2.1_amd64.AppImage",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK2FXSVlWMEE5NUNyL0hpY3FQcStDb3oxN1pDZkhYUFhsRCtmOVNNVlZCYmlxSlI4dzlxYktZblYwUFZnUUt5K2MyMHIzcUNRTTFQcDltcVUwRTY1WXc0PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjA3MTEyCWZpbGU6ei1iaXotdG9vbC1tYXRoXzAuMi4xX2FtZDY0LkFwcEltYWdlCXZlcnNpb246MC4yLjEKaE1PVmxJQzFCQ3NmZ252RXBHTCtONDh2OWhtbGRrNzVwTmxCOWJLdVhDL0dIQXVISFkvTW1EU3RhZnErN1dUUVRycWZQY1l2YjV6TkhRdXZtNjU3Q3c9PQo="
+      "url": "https://github.com/z-biz-tool/z-biz-tool-math/releases/download/v0.2.2/z-biz-tool-math_0.2.2_amd64.AppImage",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK2Y2R3JuSEh5RWdOdXhSRTNuTTczdW9TMnI1dmVyUld1NExhb05SdUduNE5RdXZvVWdTRmcwYlhUenlCYXFqS0FxaDliR3M1b1pTVGFPL3BOZG8wTUFnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0NzkzMDE2CWZpbGU6ei1iaXotdG9vbC1tYXRoXzAuMi4yX2FtZDY0LkFwcEltYWdlCXZlcnNpb246MC4yLjIKMHZRTEVoMjdJSlRYRHJTZWtZOWxxenpOWG5pNnZNbDlEQUZRaENwK3dadmlDekozZGxJYTFtTUVmaFgyeFpmbzd5UnpzVk4zQytzV1RGVG96NXFwQ0E9PQo="
     },
     "windows-x86_64": {
-      "url": "https://github.com/z-biz-tool/z-biz-tool-math/releases/download/v0.2.1/z-biz-tool-math_0.2.1_x64_en-US.msi",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK2JqYnNHRG9RelFncHFRNW43c1ZsNUJaRW1ZVDNKaWt5L3JicklLMGJ3NTN3cHhBM3NNNXBMMEk4dXBWdkU2ZGdpdk9QcHZwYWVwSW9nZlY4Vmk3YVFNPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkzMjA2OTk4CWZpbGU6ei1iaXotdG9vbC1tYXRoXzAuMi4xX3g2NF9lbi1VUy5tc2kJdmVyc2lvbjowLjIuMQpFTjQ2THJTby8vT1dFTXJUVXcvUlBiSmJGS1ZRSWdMMi9FRk1La1pGYlErUG55TCtISDQ0cnR1YTBuVTllMkYzUGQ4K3RjdFF3YU5QZ1dQc0V4cXFEUT09Cg=="
+      "url": "https://github.com/z-biz-tool/z-biz-tool-math/releases/download/v0.2.2/z-biz-tool-math_0.2.2_x64_en-US.msi",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSdXNzZDVpbWtnK2RYcFovSUsvd2NXWGpTVitQeVpveVRYQnI1TVRQZVJNVEJ6OTVaWjY4R2x5WFc1UEhUY2JzYm5rdU51Qk1SK2U1RGFlSU9QRDkzam50anRGYnh0YmdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk0NzkzMjkxCWZpbGU6ei1iaXotdG9vbC1tYXRoXzAuMi4yX3g2NF9lbi1VUy5tc2kJdmVyc2lvbjowLjIuMgpNMkdtL21OS0pNTE1xLzVhQThpTno4Z0tCWGxHVmo5Y1ZURjlocEUyQlZsRmU2eUQ1NDB4S0pKZ0UzUmhxZTZPQ0p2OXRxUVVXVUtiT3FYRXhKS0JDUT09Cg=="
     }
   }
 }
