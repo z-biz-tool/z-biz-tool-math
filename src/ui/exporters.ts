@@ -152,6 +152,25 @@ function loadGeo(raw: string | undefined, s: GeoLabState): GeometryDoc {
   }
 }
 
+/** 先检查整份参数表，避免写完前几个值才发现后面的条目损坏。 */
+function validateParams(params: Param[]): Set<string> {
+  const names = new Set<string>();
+  // 与参数条一致：导入也不能绕过标识符/保留名限制。
+  const reserved = new Set(["i", "pi", "tau", "inf", "NaN", "true", "false"]);
+  for (const p of params) {
+    if (!p || typeof p !== "object" || typeof p.name !== "string" ||
+        !/^[a-zA-Z_][a-zA-Z_0-9]*$/.test(p.name) || reserved.has(p.name)) {
+      throw new Error("参数名称无效");
+    }
+    if (names.has(p.name)) throw new Error(`参数名称重复：${p.name}`);
+    if (typeof p.value !== "number" || !Number.isFinite(p.value)) {
+      throw new Error(`参数 ${p.name} 的数值无效`);
+    }
+    names.add(p.name);
+  }
+  return names;
+}
+
 /**
  * 载入工程；文件不合结构时抛中文错误，供界面提示。
  * keepDark：自动回位会话时用——深浅色是几个工具共用的 z-tool-theme，
@@ -166,6 +185,9 @@ export function applyProject(text: string, opts?: { keepDark?: boolean }): void 
   }
   if (!data || typeof data !== "object" || data.v !== 1) throw new Error("缺少工程版本标记 v:1");
   if (!Array.isArray(data.layers) || !Array.isArray(data.params)) throw new Error("图层或参数列表缺失");
+  const paramNames = validateParams(data.params);
+  // resetFrom 需要数组；不能等参数/引擎已提交后才在这里抛错。
+  if (data.mech && !Array.isArray(data.mech.balls)) throw new Error("力学球体列表无效");
   const s = useStore.getState();
   const views = { ...s.views };
   for (const m of MODES) {
@@ -173,6 +195,11 @@ export function applyProject(text: string, opts?: { keepDark?: boolean }): void 
     if (init && Number.isFinite(init.scale) && init.scale > 0) views[m] = new Viewport(init);
   }
   const doc = loadGeo(data.geo, s);
+  // 校验、几何加载都成功后才改全局内核；只移除旧滑块拥有且新工程不再使用的变量。
+  // 不清空 globals，也不用会连同名控制台函数一起删掉的 engine.remove。
+  for (const p of s.params) {
+    if (!paramNames.has(p.name)) s.engine.globals.delete(p.name);
+  }
   for (const p of data.params) s.engine.setNum(p.name, p.value);
   s.patch({
     mode: MODES.includes(data.mode) ? data.mode : s.mode,
